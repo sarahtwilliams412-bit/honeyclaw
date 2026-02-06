@@ -173,3 +173,39 @@ alerts:
   
   # Rate limiting
   connections_per_minute: 30
+
+# Container Escape Detection
+security:
+  escape_detection:
+    enabled: true
+    # Response options: alert_only, kill, migrate, block
+    # alert_only: Log and alert, allow command (gather intel)
+    # kill: Terminate container immediately
+    # migrate: Move to deeper isolation sandbox
+    # block: Block the specific command
+    response: alert_only
+    
+    # Minimum severity to trigger (1-10, higher = more severe)
+    # 10: Docker socket, namespace escape, cgroup exploits
+    # 8-9: Capability abuse, mount escapes
+    # 6-7: Proc manipulation, enumeration
+    # 5: General suspicious patterns
+    min_severity: 5
+    
+    # Hook into shell command handlers
+    hook_shell_commands: true
+    
+    # Categories to monitor (all enabled by default)
+    categories:
+      - docker_socket
+      - proc_manipulation
+      - namespace_escape
+      - capability_abuse
+      - cgroup_exploit
+      - known_cve
+      - mount_escape
+      - kernel_exploit
+      - privileged_exec
+    
+    # Alert on high-severity (9+) patterns even if response is alert_only
+    always_alert_critical: true
