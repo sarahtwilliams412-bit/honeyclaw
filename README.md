@@ -323,14 +323,187 @@ curl -H "Authorization: Bearer $MESH_TOKEN" \
 
 ---
 
+## 🐤 Canary Tokens
+
+Built-in canary token generation for defense-in-depth. Create tokens that alert when accessed, used, or stolen.
+
+### Supported Canary Types
+
+| Type | Description | Use Case |
+|------|-------------|----------|
+| `aws-key` | Fake AWS credentials (AKIA...) | Detect credential theft |
+| `tracking-url` | Unique URLs that alert on visit | Hidden links in docs/configs |
+| `dns` | Hostnames that alert on lookup | Embedded in configs/scripts |
+| `credential` | Fake username/password pairs | SSH/database honeycreds |
+| `webhook` | Generic tokens for custom detection | Flexible embedding |
+
+### Quick Start
+
+```bash
+# Create an AWS key canary
+honeyclaw canary create --type aws-key \
+  --webhook https://hooks.slack.com/services/xxx \
+  --memo "Hidden in .aws/credentials on fileserver"
+
+# Create a tracking URL
+honeyclaw canary create --type tracking-url \
+  --webhook https://hooks.example.com/alert \
+  --memo "Embedded in internal wiki"
+
+# Create fake credentials
+honeyclaw canary create --type credential \
+  --webhook https://hooks.example.com/alert \
+  --username backup_admin \
+  --memo "Fake DB creds in .env"
+
+# List all canaries
+honeyclaw canary list
+
+# View canary details
+honeyclaw canary show cnry_abc123
+
+# View dashboard
+honeyclaw canary dashboard
+
+# Start tracking server (for URL canaries)
+honeyclaw canary server --port 8080
+```
+
+### Output Example
+
+```
+✅ Canary created successfully!
+
+Canary ID: cnry_a1b2c3d4e5f6
+Type: aws-key
+Created: 2026-02-06T09:15:00Z
+Memo: Hidden in .aws/credentials on fileserver
+Webhook: https://hooks.slack.com/services/xxx
+
+AWS Credentials (FAKE - for detection only):
+  Access Key ID:     AKIAIOSFODNN7EXAMPLE
+  Secret Access Key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYzEXAMPLEKEY
+```
+
+### Embed Canaries Automatically
+
+Generate honeypot files with canaries pre-embedded:
+
+```bash
+# Generate fake config files with canaries
+honeyclaw canary generate-files \
+  --output /opt/honeypot/fake-home \
+  --webhook https://hooks.example.com/alert
+```
+
+This creates files like:
+- `.aws/credentials` (with fake AWS keys)
+- `.env` (with fake database credentials)
+- `config/database.yml` (with fake connection strings)
+- `passwords.txt` (decoy password file)
+- `backup_keys.pem` (fake SSH key)
+
+### Dashboard
+
+View all canary activity at a glance:
+
+```
+============================================================
+           🍯 HONEY CLAW CANARY DASHBOARD
+============================================================
+
+📊 Overview (as of 2026-02-06T09:20:00)
+   Total Canaries:     12
+   Triggered:          3 🚨
+   Total Events:       47
+   Events (24h):       8
+
+📁 Canaries by Type:
+   aws-key: 5
+   tracking-url: 4
+   credential: 3
+
+🔍 Top Source IPs:
+   45.33.32.156: 12 events
+   185.220.101.42: 8 events
+   192.168.1.100: 5 events
+
+📋 Recent Events:
+   [2026-02-06T09:18:42] aws-key from 45.33.32.156
+   [2026-02-06T08:55:13] tracking-url from 185.220.101.42
+   [2026-02-06T07:30:01] credential from 192.168.1.100
+============================================================
+```
+
+### Configuration
+
+Environment variables for canary system:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CANARY_STORAGE` | `/data/canaries.json` | Canary database path |
+| `CANARY_EVENTS_STORAGE` | `/data/canary_events.json` | Events log path |
+| `CANARY_WEBHOOK_URL` | - | Default webhook for alerts |
+| `CANARY_TRACKING_DOMAIN` | `http://localhost:8080/canary` | Base URL for tracking |
+| `CANARY_DNS_DOMAIN` | - | Base domain for DNS canaries |
+
+### Integration with Honeypots
+
+Canaries are automatically embedded when you deploy honeypots:
+
+```bash
+# Deploy honeypot with embedded canaries
+openclaw skill honeyclaw deploy \
+  --template enterprise-sim \
+  --name corp-backup \
+  --embed-canaries \
+  --canary-webhook https://hooks.example.com/alert
+```
+
+### Webhook Payload
+
+When a canary triggers, your webhook receives:
+
+```json
+{
+  "event": "canary_triggered",
+  "timestamp": "2026-02-06T09:18:42Z",
+  "canary_id": "cnry_a1b2c3d4e5f6",
+  "canary_type": "aws-key",
+  "source_ip": "45.33.32.156",
+  "user_agent": "boto3/1.26.0",
+  "memo": "Hidden in .aws/credentials on fileserver",
+  "details": {
+    "access_key_id": "AKIAIOSFODNN7EXAMPLE"
+  }
+}
+```
+
+### CloudTrail Scanning
+
+Scan AWS CloudTrail logs for canary key usage:
+
+```bash
+# Scan a log file
+honeyclaw canary scan cloudtrail-logs.json --source cloudtrail
+
+# Pipe from S3
+aws s3 cp s3://bucket/logs/cloudtrail.json - | honeyclaw canary scan --source cloudtrail
+```
+
+---
+
 ## Roadmap
 
 - [x] Basic SSH honeypot template
 - [x] Fake API honeypot template
 - [x] S3-compatible log storage
-- [x] **Distributed honeypot mesh** ✨ NEW
-- [x] **Cross-region attacker correlation** ✨ NEW
-- [x] **Shared IOC database** ✨ NEW
+- [x] **Distributed honeypot mesh**
+- [x] **Cross-region attacker correlation**
+- [x] **Shared IOC database**
+- [x] **Canary token generator** ✨ NEW
+- [x] **Tracking URL server** ✨ NEW
+- [x] **AWS credential canaries** ✨ NEW
 - [ ] AI-powered dynamic responses
 - [ ] Automatic IOC extraction
 - [ ] Integration with threat intel feeds

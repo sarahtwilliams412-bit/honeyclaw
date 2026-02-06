@@ -2,7 +2,7 @@
 """
 Honey Claw - Log Aggregator
 Aggregates logs from all services and ships to S3
-Version: 1.1.0 (input validation)
+Version: 1.2.0 (real-time alerting)
 """
 
 import os
@@ -19,6 +19,16 @@ from common.validation import (
     sanitize_path,
     MAX_LOG_LINE_LENGTH,
 )
+
+# Real-time alerting (optional)
+try:
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+    from src.alerts.dispatcher import get_dispatcher, alert as send_alert
+    ALERTING_ENABLED = bool(os.environ.get('ALERT_WEBHOOK_URL'))
+except ImportError:
+    ALERTING_ENABLED = False
+    def send_alert(event, event_type):
+        pass
 
 LOG_DIR = '/var/log/honeypot'
 AGGREGATED_LOG = os.path.join(LOG_DIR, 'aggregated.json')
@@ -138,7 +148,8 @@ def aggregate_logs():
     """Main aggregation loop"""
     print(f"[Aggregator] Starting log aggregation for {HONEYPOT_ID}")
     print(f"[Aggregator] Watching directory: {LOG_DIR}")
-    print(f"[Aggregator] Input validation enabled (v1.1.0)")
+    print(f"[Aggregator] Input validation enabled (v1.2.0)")
+    print(f"[Aggregator] Real-time alerting: {'ENABLED' if ALERTING_ENABLED else 'DISABLED'}")
     
     # Track file positions
     positions = {f: 0 for f in LOG_FILES}
@@ -184,6 +195,15 @@ def aggregate_logs():
                 print(f"[Aggregator] Wrote {len(new_events)} events")
             except Exception as e:
                 print(f"[Aggregator] Write error: {sanitize_for_log(str(e), max_length=256)}")
+            
+            # Send to real-time alert pipeline
+            if ALERTING_ENABLED:
+                for event in new_events:
+                    try:
+                        event_type = event.get('event', event.get('format', 'unknown'))
+                        send_alert(event, event_type)
+                    except Exception as e:
+                        print(f"[Aggregator] Alert error: {sanitize_for_log(str(e), max_length=256)}")
             
             # TODO: Ship to S3 if configured
             if S3_BUCKET:

@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Honeyclaw - Session Replay</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/asciinema-player@3.6.3/dist/bundle/asciinema-player.css">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">
+                <span class="icon">🍯</span>
+                <h1>Honeyclaw</h1>
+            </div>
+            <nav>
+                <a href="#" class="active">Session Replay</a>
+            </nav>
+        </header>
+
+        <main>
+            <section class="session-info">
+                <h2>Session Details</h2>
+                <div class="info-grid" id="session-info">
+                    <div class="info-item">
+                        <span class="label">Session ID</span>
+                        <span class="value" id="info-session-id">-</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="label">Protocol</span>
+                        <span class="value" id="info-protocol">-</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="label">Source IP</span>
+                        <span class="value" id="info-source-ip">-</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="label">Username</span>
+                        <span class="value" id="info-username">-</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="label">Start Time</span>
+                        <span class="value" id="info-start-time">-</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="label">Duration</span>
+                        <span class="value" id="info-duration">-</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="label">Events</span>
+                        <span class="value" id="info-events">-</span>
+                    </div>
+                </div>
+            </section>
+
+            <section class="player-section">
+                <h2>Terminal Replay</h2>
+                <div class="player-container">
+                    <div id="player"></div>
+                </div>
+                <div class="controls">
+                    <div class="control-group">
+                        <button id="btn-play" class="btn btn-primary">
+                            <span class="icon">▶</span> Play
+                        </button>
+                        <button id="btn-pause" class="btn">
+                            <span class="icon">⏸</span> Pause
+                        </button>
+                        <button id="btn-restart" class="btn">
+                            <span class="icon">↺</span> Restart
+                        </button>
+                    </div>
+                    <div class="control-group">
+                        <label>Speed:</label>
+                        <select id="speed-select">
+                            <option value="0.25">0.25x</option>
+                            <option value="0.5">0.5x</option>
+                            <option value="1" selected>1x</option>
+                            <option value="1.5">1.5x</option>
+                            <option value="2">2x</option>
+                            <option value="4">4x</option>
+                        </select>
+                    </div>
+                    <div class="control-group">
+                        <span id="time-display">00:00 / 00:00</span>
+                    </div>
+                </div>
+            </section>
+
+            <section class="timeline-section">
+                <h2>Event Timeline</h2>
+                <div class="timeline-container">
+                    <div class="timeline" id="timeline">
+                        <div class="timeline-progress" id="timeline-progress"></div>
+                    </div>
+                    <div class="timeline-markers" id="timeline-markers"></div>
+                </div>
+                <div class="event-list" id="event-list">
+                    <!-- Events will be populated here -->
+                </div>
+            </section>
+
+            <section class="export-section">
+                <h2>Export & Share</h2>
+                <div class="export-buttons">
+                    <button id="btn-download-cast" class="btn">
+                        <span class="icon">📥</span> Download .cast
+                    </button>
+                    <button id="btn-download-txt" class="btn">
+                        <span class="icon">📄</span> Download .txt
+                    </button>
+                    <button id="btn-copy-link" class="btn">
+                        <span class="icon">🔗</span> Copy Share Link
+                    </button>
+                </div>
+            </section>
+        </main>
+
+        <footer>
+            <p>Honeyclaw Session Replay Dashboard</p>
+        </footer>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/asciinema-player@3.6.3/dist/bundle/asciinema-player.min.js"></script>
+    <script src="player.js"></script>
+</body>
+</html>

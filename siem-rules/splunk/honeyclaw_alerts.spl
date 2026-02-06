@@ -1,0 +1,163 @@
+# Honeyclaw Detection Rules for Splunk
+# Import these via Splunk Enterprise Security or create as saved searches
+#
+# Index: honeypot (or your configured index)
+# Sourcetype: honeyclaw:events
+
+# ============================================================================
+# HIGH SEVERITY ALERTS
+# ============================================================================
+
+# Alert: Brute Force Attack Detected
+# Description: Multiple failed auth attempts from single IP
+# MITRE: T1110 - Brute Force
+[honeyclaw_brute_force]
+search = index=honeypot sourcetype="honeyclaw:events" event_type="auth_failure" \
+| stats count as attempt_count dc(user) as unique_users by src_ip, honeypot_id \
+| where attempt_count > 10 \
+| eval severity="high", \
+       mitre_technique="T1110", \
+       alert_name="Brute Force Attack Detected"
+cron_schedule = */5 * * * *
+alert.severity = 4
+alert.suppress = 1
+alert.suppress.fields = src_ip
+
+# Alert: Successful Authentication to Honeypot
+# Description: Any successful auth to a honeypot is suspicious
+# MITRE: T1078 - Valid Accounts
+[honeyclaw_successful_auth]
+search = index=honeypot sourcetype="honeyclaw:events" event_type="auth_success" \
+| eval severity="critical", \
+       mitre_technique="T1078", \
+       alert_name="Successful Honeypot Authentication"
+cron_schedule = * * * * *
+alert.severity = 5
+realtime_schedule = 1
+
+# Alert: Command Execution on Honeypot
+# Description: Attacker executed commands after gaining access
+# MITRE: T1059 - Command and Scripting Interpreter
+[honeyclaw_command_execution]
+search = index=honeypot sourcetype="honeyclaw:events" event_type="command" \
+| eval severity="critical", \
+       mitre_technique="T1059", \
+       alert_name="Command Execution on Honeypot"
+cron_schedule = * * * * *
+alert.severity = 5
+realtime_schedule = 1
+
+# Alert: Potential Data Exfiltration
+# Description: Large data transfer or exfil patterns detected
+# MITRE: T1041 - Exfiltration Over C2 Channel
+[honeyclaw_data_exfil]
+search = index=honeypot sourcetype="honeyclaw:events" event_type="data_exfil" \
+| eval severity="critical", \
+       mitre_technique="T1041", \
+       alert_name="Potential Data Exfiltration Detected"
+cron_schedule = * * * * *
+alert.severity = 5
+
+# ============================================================================
+# MEDIUM SEVERITY ALERTS
+# ============================================================================
+
+# Alert: Port Scan Detected
+# Description: Multiple ports accessed from single IP
+# MITRE: T1046 - Network Service Discovery
+[honeyclaw_port_scan]
+search = index=honeypot sourcetype="honeyclaw:events" event_type="connection" \
+| stats dc(dest_port) as unique_ports count as connections by src_ip \
+| where unique_ports > 5 \
+| eval severity="medium", \
+       mitre_technique="T1046", \
+       alert_name="Port Scan Detected"
+cron_schedule = */10 * * * *
+alert.severity = 3
+
+# Alert: Multiple Honeypots Targeted
+# Description: Same IP targeting multiple honeypots
+# MITRE: T1595 - Active Scanning
+[honeyclaw_multi_honeypot]
+search = index=honeypot sourcetype="honeyclaw:events" \
+| stats dc(honeypot_id) as honeypots_targeted count by src_ip \
+| where honeypots_targeted > 2 \
+| eval severity="high", \
+       mitre_technique="T1595", \
+       alert_name="Multi-Honeypot Attack Campaign"
+cron_schedule = */15 * * * *
+alert.severity = 4
+
+# Alert: Known Malicious Tool Patterns
+# Description: Commands matching known attack tools
+# MITRE: T1059 - Command and Scripting Interpreter
+[honeyclaw_malicious_tools]
+search = index=honeypot sourcetype="honeyclaw:events" event_type="command" \
+| where match(command, "(?i)(wget.*\|.*sh|curl.*\|.*bash|nc\s+-e|nmap|masscan|hydra|medusa|gobuster|nikto|sqlmap)") \
+| eval severity="high", \
+       mitre_technique="T1059", \
+       alert_name="Malicious Tool Usage Detected"
+cron_schedule = * * * * *
+alert.severity = 4
+
+# Alert: Credential Stuffing Pattern
+# Description: Many unique usernames from single IP
+# MITRE: T1110.004 - Credential Stuffing
+[honeyclaw_credential_stuffing]
+search = index=honeypot sourcetype="honeyclaw:events" event_type="auth_failure" \
+| stats dc(user) as unique_usernames count as attempts by src_ip \
+| where unique_usernames > 20 AND unique_usernames < attempts \
+| eval severity="medium", \
+       mitre_technique="T1110.004", \
+       alert_name="Credential Stuffing Attack"
+cron_schedule = */5 * * * *
+alert.severity = 3
+
+# ============================================================================
+# LOW SEVERITY / INFORMATIONAL
+# ============================================================================
+
+# Alert: New Geographic Source
+# Description: Activity from previously unseen country
+# MITRE: Initial Access
+[honeyclaw_new_geo]
+search = index=honeypot sourcetype="honeyclaw:events" src_country=* \
+| stats earliest(_time) as first_seen count by src_country \
+| where first_seen > relative_time(now(), "-1h") \
+| eval severity="low", \
+       alert_name="New Geographic Attack Source"
+cron_schedule = 0 * * * *
+alert.severity = 2
+
+# Dashboard: Honeypot Activity Overview
+# Description: Summary dashboard for SOC
+[honeyclaw_dashboard_activity]
+search = index=honeypot sourcetype="honeyclaw:events" \
+| timechart span=1h count by event_type \
+| eval _time=_time
+
+# ============================================================================
+# THREAT HUNTING QUERIES
+# ============================================================================
+
+# Hunt: Lateral Movement Indicators
+# Description: Find IPs that authenticated then scanned
+[honeyclaw_hunt_lateral]
+search = index=honeypot sourcetype="honeyclaw:events" \
+| stats values(event_type) as event_types values(honeypot_id) as targets by src_ip \
+| where mvcount(event_types) > 1 AND mvfind(event_types, "auth_success") >= 0
+
+# Hunt: Long Session Duration
+# Description: Unusually long honeypot sessions
+[honeyclaw_hunt_long_sessions]
+search = index=honeypot sourcetype="honeyclaw:events" session_duration_ms>* \
+| where session_duration_ms > 300000 \
+| table _time, src_ip, honeypot_id, session_duration_ms, event_type
+
+# Hunt: Off-Hours Activity
+# Description: Attacks during non-business hours
+[honeyclaw_hunt_offhours]
+search = index=honeypot sourcetype="honeyclaw:events" \
+| eval hour=strftime(_time, "%H") \
+| where hour < 6 OR hour > 22 \
+| stats count by src_ip, hour
