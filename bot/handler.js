@@ -6,6 +6,7 @@
  */
 
 const { Bot, session } = require('grammy');
+const { sanitizeUserMessage, sanitizeError } = require('../src/utils/log-sanitizer');
 
 // ============================================================
 // Configuration
@@ -49,11 +50,13 @@ bot.use(session({
   }),
 }));
 
-// Logging middleware
+// Logging middleware (sanitized - no sensitive data in logs)
 bot.use(async (ctx, next) => {
   const start = Date.now();
   const user = ctx.from?.username || ctx.from?.id || 'unknown';
-  console.log(`[${new Date().toISOString()}] ${user}: ${ctx.message?.text || '(no text)'}`);
+  // Sanitize message content to prevent password/token leaks
+  const safeMessage = sanitizeUserMessage(ctx.message?.text);
+  console.log(`[${new Date().toISOString()}] ${user}: ${safeMessage}`);
   await next();
   console.log(`[${new Date().toISOString()}] Response time: ${Date.now() - start}ms`);
 });
@@ -360,7 +363,7 @@ function generateMockLogs() {
       logs.push(`[${timeStr}] 🟡 SSH login attempt
         IP: ${ip} (${country})
         User: ${user}
-        Pass: ${user}123`);
+        Pass: ******* (${Math.floor(Math.random() * 8) + 4} chars)`);
     }
   }
   
@@ -372,7 +375,8 @@ function generateMockLogs() {
 // ============================================================
 
 bot.catch((err) => {
-  console.error('Bot error:', err);
+  // Sanitize error to prevent sensitive data in logs (e.g., tokens in stack traces)
+  console.error('Bot error:', sanitizeError(err));
 });
 
 // ============================================================
@@ -383,7 +387,8 @@ console.log('🍯 Honey Claw Bot starting...');
 bot.start({
   onStart: (botInfo) => {
     console.log(`✅ Bot running as @${botInfo.username}`);
-    console.log(`Admin IDs: ${ADMIN_IDS.length > 0 ? ADMIN_IDS.join(', ') : '(none configured)'}`);
+    // Note: Admin IDs intentionally not logged to prevent enumeration
+    console.log(`Admins configured: ${ADMIN_IDS.length > 0 ? ADMIN_IDS.length : 0}`);
   },
 });
 
