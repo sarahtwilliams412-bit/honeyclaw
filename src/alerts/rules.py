@@ -186,26 +186,50 @@ BUILTIN_RULES: List[AlertRule] = [
         dedup_window_sec=300,
     ),
     
-    # Medium: SQL injection attempts
+    # Medium: SQL injection attempts (top-level path)
     AlertRule(
         name="sqli_attempt",
         description="SQL injection attempt detected",
         severity=Severity.MEDIUM,
         event_types=["api_request", "http_request"],
         conditions={
-            "path": r'(\%27|\'|--|;|\/\*|\*\/|union.*select|select.*from)',
+            "path": "r'(%27|\\'|--|;|/\\*|\\*/|union.*select|select.*from)'",
         },
         tags=["injection", "sqli"],
     ),
     
-    # Medium: Path traversal
+    # Medium: SQL injection (nested request.path)
+    AlertRule(
+        name="sqli_attempt_request",
+        description="SQL injection attempt detected",
+        severity=Severity.MEDIUM,
+        event_types=["api_request", "http_request"],
+        conditions={
+            "request.path": "r'(%27|\\'|--|;|/\\*|\\*/|union.*select|select.*from)'",
+        },
+        tags=["injection", "sqli"],
+    ),
+    
+    # Medium: Path traversal (top-level path)
     AlertRule(
         name="path_traversal",
         description="Path traversal attempt detected",
         severity=Severity.MEDIUM,
         event_types=["api_request", "http_request", "file_*"],
         conditions={
-            "path": r'(\.\.\/|\.\.\\|%2e%2e%2f|%252e%252e%252f)',
+            "path": "r'(\\.\\./|\\.\\.\\\\/|%2e%2e%2f|%252e%252e%252f)'",
+        },
+        tags=["traversal", "lfi"],
+    ),
+    
+    # Medium: Path traversal (nested request.path)
+    AlertRule(
+        name="path_traversal_request",
+        description="Path traversal attempt detected",
+        severity=Severity.MEDIUM,
+        event_types=["api_request", "http_request", "file_*"],
+        conditions={
+            "request.path": "r'(\\.\\./|\\.\\.\\\\/|%2e%2e%2f|%252e%252e%252f)'",
         },
         tags=["traversal", "lfi"],
     ),

@@ -493,6 +493,179 @@ aws s3 cp s3://bucket/logs/cloudtrail.json - | honeyclaw canary scan --source cl
 
 ---
 
+## 🎬 Session Replay Dashboard
+
+Watch attacker sessions like a movie! Record and replay SSH sessions with full timing, including what attackers typed and saw.
+
+### Features
+
+- **Asciinema-compatible** — Standard `.cast` format, works with any asciinema player
+- **Web dashboard** — Built-in replay player with timeline and controls
+- **HAR format support** — HTTP sessions in standard HAR format
+- **Shareable links** — Create secure share tokens for recordings
+- **S3 or local storage** — Store recordings locally or in S3-compatible storage
+
+### Quick Start
+
+```bash
+# List recorded sessions
+honeyclaw replay list
+
+# Show session in console (ASCII playback)
+honeyclaw replay show abc123
+
+# Open web-based replay player
+honeyclaw replay show abc123 --web
+
+# Export recording
+honeyclaw replay show abc123 --export session.cast
+
+# Get session details
+honeyclaw replay info abc123
+
+# Create shareable link
+honeyclaw replay share abc123
+
+# Delete a recording
+honeyclaw replay delete abc123
+```
+
+### CLI Reference
+
+```bash
+# List with filters
+honeyclaw replay list --protocol ssh --ip 45.33.32.156 --limit 10
+
+# List as JSON
+honeyclaw replay list --json
+
+# Show with custom speed
+honeyclaw replay show abc123 --speed 2.0
+
+# Open web player on custom port
+honeyclaw replay show abc123 --web --port 9000
+
+# Revoke a share link
+honeyclaw replay share abc123 --revoke
+```
+
+### Recording Integration
+
+Add recording to your honeypot with just a few lines:
+
+```python
+from src.replay.integration import RecordingSSHSession
+
+# Create recording session
+session = RecordingSSHSession(
+    source_ip=client_ip,
+    source_port=client_port,
+    dest_port=22,
+    username=username
+)
+
+# Record output (what honeypot sends)
+session.record_output("Welcome to server\n$ ")
+
+# Record input (what attacker types)
+session.record_input("ls -la\n")
+
+# Tag interesting sessions
+session.add_tag("brute-force")
+session.set_note("Unusual command sequence detected")
+
+# Save when done
+path = session.save()
+print(f"Recording saved: {path}")
+```
+
+### Web Dashboard
+
+The built-in dashboard provides:
+
+- **Terminal replay** — Watch the session in real-time with asciinema-player.js
+- **Play/pause/speed controls** — Slow down to analyze, speed up to scan
+- **Event timeline** — See all input/output events with timestamps
+- **Click to seek** — Jump to any point in the session
+- **Session metadata** — Source IP, username, duration, event count
+- **Export options** — Download as `.cast` or `.txt`
+- **Share functionality** — Copy shareable link
+
+### Recording Formats
+
+**SSH Sessions (asciinema v2)**
+```json
+{"version": 2, "width": 80, "height": 24, "timestamp": 1707200000, "honeyclaw": {...}}
+[0.0, "o", "root@server:~# "]
+[1.5, "i", "whoami\r"]
+[1.6, "o", "whoami\r\nroot\r\nroot@server:~# "]
+```
+
+**HTTP Sessions (HAR)**
+```json
+{
+  "log": {
+    "version": "1.2",
+    "creator": {"name": "Honeyclaw", "version": "1.0.0"},
+    "entries": [
+      {
+        "startedDateTime": "2024-02-06T09:00:00Z",
+        "request": {"method": "POST", "url": "/login", ...},
+        "response": {"status": 401, "statusText": "Unauthorized", ...}
+      }
+    ]
+  }
+}
+```
+
+### Storage Configuration
+
+```bash
+# Local storage (default)
+export HONEYCLAW_RECORDINGS_PATH=/var/lib/honeyclaw/recordings
+
+# S3 storage
+export HONEYCLAW_STORAGE=s3
+export HONEYCLAW_S3_BUCKET=my-honeyclaw-bucket
+export HONEYCLAW_S3_PREFIX=recordings/
+export AWS_REGION=us-east-1
+
+# For S3-compatible (MinIO, R2, etc)
+export HONEYCLAW_S3_ENDPOINT=https://minio.example.com
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HONEYCLAW_STORAGE` | `local` | Storage backend (`local` or `s3`) |
+| `HONEYCLAW_RECORDINGS_PATH` | `/var/lib/honeyclaw/recordings` | Local storage path |
+| `HONEYCLAW_S3_BUCKET` | - | S3 bucket name |
+| `HONEYCLAW_S3_PREFIX` | `recordings/` | S3 key prefix |
+| `HONEYCLAW_S3_ENDPOINT` | - | Custom S3 endpoint URL |
+| `HONEYCLAW_BASE_URL` | `http://localhost:8080` | Base URL for share links |
+
+### Example: Recording SSH Honeypot
+
+See `examples/recording_ssh_honeypot.py` for a complete working example:
+
+```bash
+# Run the recording-enabled honeypot
+cd honeyclaw
+HONEYCLAW_RECORDINGS_PATH=/tmp/recordings python examples/recording_ssh_honeypot.py
+
+# Connect to it (in another terminal)
+ssh admin@localhost -p 2222  # Password: admin
+
+# List recordings
+python -m src.cli.main replay list
+
+# Watch the replay
+python -m src.cli.main replay show <session_id> --web
+```
+
+---
+
 ## Roadmap
 
 - [x] Basic SSH honeypot template
@@ -504,6 +677,8 @@ aws s3 cp s3://bucket/logs/cloudtrail.json - | honeyclaw canary scan --source cl
 - [x] **Canary token generator** ✨ NEW
 - [x] **Tracking URL server** ✨ NEW
 - [x] **AWS credential canaries** ✨ NEW
+- [x] **Session replay dashboard** 🎬 NEW
+- [x] **Asciinema-compatible recording** 🎬 NEW
 - [ ] AI-powered dynamic responses
 - [ ] Automatic IOC extraction
 - [ ] Integration with threat intel feeds
