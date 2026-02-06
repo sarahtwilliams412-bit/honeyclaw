@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """
 Simple SSH Honeypot - Logs all connection attempts
-Version: 1.3.0 (input validation + rate limiting)
+Version: 1.3.1 (custom SSH banner support)
 
-Rate limit configuration via environment variables:
+Environment variables:
+  PORT                       - Listen port (default: 8022)
+  LOG_PATH                   - Log file path (default: /var/log/honeypot/ssh.json)
+  SSH_BANNER                 - SSH version banner (default: OpenSSH_8.9p1 Ubuntu-3ubuntu0.6)
+  
+Rate limit configuration:
   RATELIMIT_ENABLED          - Enable rate limiting (default: true)
   RATELIMIT_CONN_PER_MIN     - Max connections per IP per minute (default: 10)
   RATELIMIT_AUTH_PER_HOUR    - Max auth attempts per IP per hour (default: 100)
@@ -138,6 +143,10 @@ def get_port():
 
 PORT = get_port()
 LOG_FILE = Path(os.environ.get("LOG_PATH", "/var/log/honeypot/ssh.json"))
+
+# SSH banner - hide AsyncSSH identity
+# Default looks like a common Ubuntu OpenSSH server
+SSH_BANNER = os.environ.get("SSH_BANNER", "OpenSSH_8.9p1 Ubuntu-3ubuntu0.6")
 
 def hash_password(password: str) -> str:
     """Hash password for safe logging (first 16 chars of SHA256)"""
@@ -303,13 +312,16 @@ async def start_server():
             'version': '1.3.0',
             'rate_limiting': rate_limiter.enabled,
             'conn_limit': f'{rate_limiter.conn_per_min}/min',
-            'auth_limit': f'{rate_limiter.auth_per_hour}/hr'
+            'auth_limit': f'{rate_limiter.auth_per_hour}/hr',
+            'ssh_banner': SSH_BANNER
         })
         
         print(f"[DEBUG] Starting SSH server on 0.0.0.0:{PORT}...", flush=True)
+        print(f"[DEBUG] SSH banner: {SSH_BANNER}", flush=True)
         server = await asyncssh.create_server(
             HoneypotServer, '0.0.0.0', PORT,
             server_host_keys=[key],
+            server_version=SSH_BANNER,
             process_factory=None
         )
         print(f"[DEBUG] Server started: {server}", flush=True)
