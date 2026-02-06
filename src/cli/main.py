@@ -381,6 +381,154 @@ def cmd_replay_delete(args):
         print(f"Failed to delete: {full_session_id}")
 
 
+# === Report Commands ===
+
+def cmd_report(args):
+    """Report an IP address to abuse databases"""
+    import asyncio
+    from src.reporting import ReportingEngine, ReportingConfig
+    
+    # Build config from args
+    config = ReportingConfig(
+        enabled=True,
+        min_severity='low' if args.force else 'high',
+        cooldown_hours=0 if args.force else 24,
+        providers=args.providers.split(',') if args.providers else ['abuseipdb'],
+        honeypot_id=os.environ.get('HONEYPOT_ID', 'honeyclaw'),
+    )
+    
+    engine = ReportingEngine(config=config)
+    
+    # Check provider status
+    if not engine.providers:
+        print("Error: No reporting providers configured.", file=sys.stderr)
+        print("Set ABUSEIPDB_API_KEY environment variable for AbuseIPDB reporting.", file=sys.stderr)
+        sys.exit(1)
+    
+    async def do_report():
+        if args.dry_run:
+            print(f"[DRY RUN] Would report {args.ip}")
+            print(f"  Reason: {args.reason}")
+            print(f"  Providers: {list(engine.providers.keys())}")
+            return
+        
+        results = await engine.report_ip(
+            ip=args.ip,
+            reason=args.reason,
+            force=args.force,
+        )
+        
+        if not results:
+            print(f"Report filtered - IP may have been recently reported or classified as benign.")
+            print("Use --force to bypass filters.")
+            return
+        
+        for result in results:
+            if result.success:
+                print(f"✓ Reported to {result.provider}: {result.message}")
+            else:
+                print(f"✗ Failed to report to {result.provider}: {result.error}")
+    
+    asyncio.run(do_report())
+
+
+def cmd_report_status(args):
+    """Show reporting system status"""
+    from src.reporting import ReportingEngine
+    
+    engine = ReportingEngine()
+    stats = engine.get_stats()
+    
+    if args.json:
+        print(json.dumps(stats, indent=2))
+        return
+    
+    print("=== Honeyclaw Reporting Status ===\n")
+    
+    print("Configuration:")
+    config = stats['config']
+    print(f"  Enabled:          {config['enabled']}")
+    print(f"  Min Severity:     {config['min_severity']}")
+    print(f"  Cooldown:         {config['cooldown_hours']}h")
+    print(f"  Require Confirm:  {config['require_confirmation']}")
+    
+    print("\nProviders:")
+    providers = stats['providers_enabled']
+    if providers:
+        for p in providers:
+            print(f"  ✓ {p}")
+    else:
+        print("  (none configured)")
+    
+    print("\nStatistics:")
+    print(f"  Reports Submitted: {stats['reports_submitted']}")
+    print(f"  Reports Filtered:  {stats['reports_filtered']}")
+    print(f"  Reports Failed:    {stats['reports_failed']}")
+    
+    filter_stats = stats['filter_stats']
+    print(f"\nFilter Status:")
+    print(f"  Cached IPs:        {filter_stats['reported_ips_cached']}")
+    print(f"  Today's Reports:   {filter_stats['daily_count']}/{filter_stats['daily_limit']}")
+
+
+def cmd_report_log(args):
+    """Show recent report audit log"""
+    from src.reporting import ReportingEngine
+    
+    engine = ReportingEngine()
+    entries = engine.get_audit_log(limit=args.limit)
+    
+    if args.json:
+        print(json.dumps(entries, indent=2))
+        return
+    
+    if not entries:
+        print("No audit log entries found.")
+        return
+    
+    print("=== Recent Report Audit Log ===\n")
+    
+    for entry in entries:
+        status = "✓" if entry.get('success') else "✗"
+        print(f"{status} {entry.get('timestamp', '?')}")
+        print(f"  IP:       {entry.get('ip')}")
+        print(f"  Event:    {entry.get('event_type')}")
+        print(f"  Provider: {entry.get('provider')}")
+        if entry.get('error'):
+            print(f"  Error:    {entry.get('error')}")
+        print()
+
+
+def cmd_report_lookup(args):
+    """Lookup abuse contact for an IP"""
+    import asyncio
+    from src.reporting.providers.isp_abuse import ISPAbuseReporter
+    
+    reporter = ISPAbuseReporter()
+    
+    async def do_lookup():
+        contact = await reporter.lookup_abuse_contact(args.ip)
+        
+        if args.json:
+            print(json.dumps(contact.to_dict(), indent=2))
+            return
+        
+        if contact.error:
+            print(f"Error: {contact.error}")
+            sys.exit(1)
+        
+        print(f"=== Abuse Contact for {args.ip} ===\n")
+        print(f"Organization: {contact.org_name or 'Unknown'}")
+        print(f"ASN:          {contact.asn or 'Unknown'}")
+        print(f"Country:      {contact.country or 'Unknown'}")
+        print(f"Abuse Email:  {contact.abuse_email or 'Not found'}")
+        
+        if contact.whois_raw and args.verbose:
+            print(f"\n=== Raw WHOIS ===\n{contact.whois_raw[:2000]}")
+    
+    asyncio.run(do_lookup())
+
+
 def cli():
     """Main CLI entry point"""
     parser = argparse.ArgumentParser(
@@ -430,6 +578,37 @@ def cli():
     delete_parser.add_argument('--force', '-f', action='store_true', help='Skip confirmation')
     delete_parser.set_defaults(func=cmd_replay_delete)
     
+    # === Report command group ===
+    report_parser = subparsers.add_parser('report', help='Abuse reporting commands')
+    report_subparsers = report_parser.add_subparsers(dest='subcommand', help='Report subcommands')
+    
+    # report ip (default action when called as 'honeyclaw report <ip>')
+    report_ip_parser = report_subparsers.add_parser('ip', help='Report an IP address')
+    report_ip_parser.add_argument('ip', help='IP address to report')
+    report_ip_parser.add_argument('--reason', '-r', required=True, help='Reason for report')
+    report_ip_parser.add_argument('--providers', '-p', help='Comma-separated providers (default: abuseipdb)')
+    report_ip_parser.add_argument('--force', '-f', action='store_true', help='Skip filters (cooldown, etc.)')
+    report_ip_parser.add_argument('--dry-run', '-n', action='store_true', help='Show what would be reported')
+    report_ip_parser.set_defaults(func=cmd_report)
+    
+    # report status
+    report_status_parser = report_subparsers.add_parser('status', help='Show reporting status')
+    report_status_parser.add_argument('--json', '-j', action='store_true', help='Output as JSON')
+    report_status_parser.set_defaults(func=cmd_report_status)
+    
+    # report log
+    report_log_parser = report_subparsers.add_parser('log', help='Show report audit log')
+    report_log_parser.add_argument('--limit', '-l', type=int, default=20, help='Number of entries')
+    report_log_parser.add_argument('--json', '-j', action='store_true', help='Output as JSON')
+    report_log_parser.set_defaults(func=cmd_report_log)
+    
+    # report lookup
+    report_lookup_parser = report_subparsers.add_parser('lookup', help='Lookup abuse contact for IP')
+    report_lookup_parser.add_argument('ip', help='IP address to lookup')
+    report_lookup_parser.add_argument('--json', '-j', action='store_true', help='Output as JSON')
+    report_lookup_parser.add_argument('--verbose', '-v', action='store_true', help='Show raw WHOIS')
+    report_lookup_parser.set_defaults(func=cmd_report_lookup)
+    
     args = parser.parse_args()
     
     if not args.command:
@@ -438,6 +617,10 @@ def cli():
     
     if args.command == 'replay' and not args.subcommand:
         replay_parser.print_help()
+        sys.exit(0)
+    
+    if args.command == 'report' and not args.subcommand:
+        report_parser.print_help()
         sys.exit(0)
     
     if hasattr(args, 'func'):

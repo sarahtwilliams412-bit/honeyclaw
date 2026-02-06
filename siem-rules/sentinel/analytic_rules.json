@@ -1,0 +1,172 @@
+{
+  "rules": [
+    {
+      "name": "Honeyclaw - Brute Force Attack Detected",
+      "description": "Multiple failed authentication attempts from a single IP address targeting a honeypot.",
+      "severity": "High",
+      "enabled": true,
+      "query": "HoneyclawEvents_CL\n| where EventType_s == 'auth_failure'\n| summarize AttemptCount = count(), UniqueUsers = dcount(TargetUsername_s) by SrcIpAddr_s, HoneypotId_s, bin(TimeGenerated, 5m)\n| where AttemptCount > 10\n| project TimeGenerated, SrcIpAddr_s, HoneypotId_s, AttemptCount, UniqueUsers",
+      "queryFrequency": "PT5M",
+      "queryPeriod": "PT10M",
+      "triggerOperator": "GreaterThan",
+      "triggerThreshold": 0,
+      "tactics": ["CredentialAccess"],
+      "techniques": ["T1110"]
+    },
+    {
+      "name": "Honeyclaw - Successful Honeypot Authentication",
+      "description": "An attacker successfully authenticated to a honeypot. Critical indicator of compromise.",
+      "severity": "High",
+      "enabled": true,
+      "query": "HoneyclawEvents_CL\n| where EventType_s == 'auth_success'\n| project TimeGenerated, SrcIpAddr_s, HoneypotId_s, TargetUsername_s, HoneypotService_s, EventMessage_s",
+      "queryFrequency": "PT1M",
+      "queryPeriod": "PT5M",
+      "triggerOperator": "GreaterThan",
+      "triggerThreshold": 0,
+      "tactics": ["InitialAccess"],
+      "techniques": ["T1078"],
+      "incidentConfiguration": {
+        "createIncident": true,
+        "groupingConfiguration": {
+          "enabled": true,
+          "reopenClosedIncident": true,
+          "lookbackDuration": "PT1H",
+          "matchingMethod": "AllEntities"
+        }
+      }
+    },
+    {
+      "name": "Honeyclaw - Command Execution on Honeypot",
+      "description": "Command execution detected on honeypot, indicating active post-exploitation.",
+      "severity": "High",
+      "enabled": true,
+      "query": "HoneyclawEvents_CL\n| where EventType_s == 'command'\n| project TimeGenerated, SrcIpAddr_s, HoneypotId_s, CommandLine_s, TargetUsername_s",
+      "queryFrequency": "PT1M",
+      "queryPeriod": "PT5M",
+      "triggerOperator": "GreaterThan",
+      "triggerThreshold": 0,
+      "tactics": ["Execution"],
+      "techniques": ["T1059"]
+    },
+    {
+      "name": "Honeyclaw - Malware Detection",
+      "description": "Malware or malicious payload detected on honeypot.",
+      "severity": "High",
+      "enabled": true,
+      "query": "HoneyclawEvents_CL\n| where EventType_s == 'malware'\n| project TimeGenerated, SrcIpAddr_s, HoneypotId_s, FileHashSha256_s, FileSize_d",
+      "queryFrequency": "PT1M",
+      "queryPeriod": "PT5M",
+      "triggerOperator": "GreaterThan",
+      "triggerThreshold": 0,
+      "tactics": ["Execution"],
+      "techniques": ["T1204"]
+    },
+    {
+      "name": "Honeyclaw - Data Exfiltration Attempt",
+      "description": "Potential data exfiltration from honeypot detected.",
+      "severity": "High",
+      "enabled": true,
+      "query": "HoneyclawEvents_CL\n| where EventType_s == 'data_exfil'\n| project TimeGenerated, SrcIpAddr_s, HoneypotId_s, EventMessage_s",
+      "queryFrequency": "PT1M",
+      "queryPeriod": "PT5M",
+      "triggerOperator": "GreaterThan",
+      "triggerThreshold": 0,
+      "tactics": ["Exfiltration"],
+      "techniques": ["T1041"]
+    },
+    {
+      "name": "Honeyclaw - Port Scanning Activity",
+      "description": "Single IP scanning multiple ports on honeypot infrastructure.",
+      "severity": "Medium",
+      "enabled": true,
+      "query": "HoneyclawEvents_CL\n| where EventType_s == 'connection'\n| summarize UniquePorts = dcount(toint(DstPortNumber_s)), ConnectionCount = count() by SrcIpAddr_s, bin(TimeGenerated, 10m)\n| where UniquePorts > 5\n| project TimeGenerated, SrcIpAddr_s, UniquePorts, ConnectionCount",
+      "queryFrequency": "PT10M",
+      "queryPeriod": "PT15M",
+      "triggerOperator": "GreaterThan",
+      "triggerThreshold": 0,
+      "tactics": ["Discovery"],
+      "techniques": ["T1046"]
+    },
+    {
+      "name": "Honeyclaw - Multi-Honeypot Attack Campaign",
+      "description": "Same IP targeting multiple honeypots indicates coordinated attack.",
+      "severity": "High",
+      "enabled": true,
+      "query": "HoneyclawEvents_CL\n| summarize TargetedHoneypots = dcount(HoneypotId_s), EventCount = count() by SrcIpAddr_s, bin(TimeGenerated, 15m)\n| where TargetedHoneypots > 2\n| project TimeGenerated, SrcIpAddr_s, TargetedHoneypots, EventCount",
+      "queryFrequency": "PT15M",
+      "queryPeriod": "PT20M",
+      "triggerOperator": "GreaterThan",
+      "triggerThreshold": 0,
+      "tactics": ["Reconnaissance"],
+      "techniques": ["T1595"]
+    },
+    {
+      "name": "Honeyclaw - Credential Stuffing Pattern",
+      "description": "Many unique usernames from single IP, indicating credential stuffing attack.",
+      "severity": "Medium",
+      "enabled": true,
+      "query": "HoneyclawEvents_CL\n| where EventType_s == 'auth_failure'\n| summarize UniqueUsernames = dcount(TargetUsername_s), Attempts = count() by SrcIpAddr_s, bin(TimeGenerated, 5m)\n| where UniqueUsernames > 20 and UniqueUsernames < Attempts\n| project TimeGenerated, SrcIpAddr_s, UniqueUsernames, Attempts",
+      "queryFrequency": "PT5M",
+      "queryPeriod": "PT10M",
+      "triggerOperator": "GreaterThan",
+      "triggerThreshold": 0,
+      "tactics": ["CredentialAccess"],
+      "techniques": ["T1110"]
+    },
+    {
+      "name": "Honeyclaw - Exploit Attempt Detected",
+      "description": "Active exploitation attempt against honeypot service.",
+      "severity": "High",
+      "enabled": true,
+      "query": "HoneyclawEvents_CL\n| where EventType_s == 'exploit_attempt'\n| project TimeGenerated, SrcIpAddr_s, HoneypotId_s, HoneypotService_s, EventMessage_s",
+      "queryFrequency": "PT1M",
+      "queryPeriod": "PT5M",
+      "triggerOperator": "GreaterThan",
+      "triggerThreshold": 0,
+      "tactics": ["InitialAccess"],
+      "techniques": ["T1190"]
+    },
+    {
+      "name": "Honeyclaw - Lateral Movement Indicators",
+      "description": "Internal IP or post-compromise lateral movement to honeypot.",
+      "severity": "High",
+      "enabled": true,
+      "query": "HoneyclawEvents_CL\n| where EventType_s == 'lateral_movement' or SrcIpAddr_s startswith '10.' or SrcIpAddr_s startswith '192.168.' or SrcIpAddr_s startswith '172.'\n| where EventType_s in ('auth_attempt', 'auth_success', 'connection')\n| project TimeGenerated, SrcIpAddr_s, HoneypotId_s, EventType_s, TargetUsername_s",
+      "queryFrequency": "PT5M",
+      "queryPeriod": "PT10M",
+      "triggerOperator": "GreaterThan",
+      "triggerThreshold": 0,
+      "tactics": ["LateralMovement"],
+      "techniques": ["T1021"]
+    }
+  ],
+  "workbooks": [
+    {
+      "name": "Honeyclaw Overview",
+      "description": "Overview dashboard for Honeyclaw honeypot activity",
+      "category": "Security"
+    }
+  ],
+  "hunting_queries": [
+    {
+      "name": "Honeyclaw - Top Attacking IPs",
+      "description": "Find the most active attacking IP addresses",
+      "query": "HoneyclawEvents_CL\n| summarize EventCount = count(), FirstSeen = min(TimeGenerated), LastSeen = max(TimeGenerated), UniqueHoneypots = dcount(HoneypotId_s), EventTypes = make_set(EventType_s) by SrcIpAddr_s\n| order by EventCount desc\n| take 50"
+    },
+    {
+      "name": "Honeyclaw - Attack Timeline",
+      "description": "Timeline of attack events by type",
+      "query": "HoneyclawEvents_CL\n| summarize Count = count() by EventType_s, bin(TimeGenerated, 1h)\n| render timechart"
+    },
+    {
+      "name": "Honeyclaw - Geographic Attack Sources",
+      "description": "Attack distribution by country",
+      "query": "HoneyclawEvents_CL\n| where isnotempty(SrcGeoCountry_s)\n| summarize EventCount = count(), UniqueIPs = dcount(SrcIpAddr_s) by SrcGeoCountry_s\n| order by EventCount desc"
+    },
+    {
+      "name": "Honeyclaw - Command Analysis",
+      "description": "Analyze commands executed on honeypots",
+      "query": "HoneyclawEvents_CL\n| where EventType_s == 'command'\n| project TimeGenerated, SrcIpAddr_s, HoneypotId_s, CommandLine_s\n| take 100"
+    }
+  ]
+}

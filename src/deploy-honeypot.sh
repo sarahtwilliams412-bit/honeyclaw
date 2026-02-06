@@ -17,6 +17,12 @@ LOG_DIR="${HONEYCLAW_LOG_DIR:-/var/log/honeyclaw}"
 S3_BUCKET="${HONEYCLAW_S3_BUCKET:-}"
 S3_ENDPOINT="${HONEYCLAW_S3_ENDPOINT:-https://s3.amazonaws.com}"
 
+# SIEM Integration
+SIEM_CONFIG="${HONEYCLAW_SIEM_CONFIG:-}"
+SIEM_PROVIDER="${HONEYCLAW_SIEM_PROVIDER:-}"
+SIEM_ENDPOINT="${HONEYCLAW_SIEM_ENDPOINT:-}"
+SIEM_TOKEN="${HONEYCLAW_SIEM_TOKEN:-}"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -37,6 +43,8 @@ PORT=""
 PORTS=""
 DETACH=true
 FORCE=false
+SIEM_ENABLED=false
+SIEM_ARG=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -69,6 +77,14 @@ while [[ $# -gt 0 ]]; do
             FORCE=true
             shift
             ;;
+        --siem)
+            SIEM_ENABLED=true
+            if [[ -n "${2:-}" && ! "$2" =~ ^- ]]; then
+                SIEM_ARG="$2"
+                shift
+            fi
+            shift
+            ;;
         --help|-h)
             cat <<EOF
 Honey Claw - Honeypot Deployment
@@ -83,6 +99,7 @@ Options:
   -d, --detach            Run in background (default)
       --no-detach         Run in foreground
   -f, --force             Remove existing honeypot with same name
+      --siem [config]     Enable SIEM integration (config file or provider name)
   -h, --help              Show this help message
 
 Environment Variables:
@@ -90,6 +107,9 @@ Environment Variables:
   HONEYCLAW_LOG_DIR       Local log directory (default: /var/log/honeyclaw)
   HONEYCLAW_S3_BUCKET     S3 bucket for log shipping
   HONEYCLAW_S3_ENDPOINT   S3 endpoint URL
+  HONEYCLAW_SIEM_PROVIDER SIEM provider (splunk, elastic, sentinel, syslog)
+  HONEYCLAW_SIEM_ENDPOINT SIEM endpoint URL
+  HONEYCLAW_SIEM_TOKEN    SIEM authentication token
 
 Examples:
   # Deploy SSH honeypot on port 2222
@@ -100,6 +120,12 @@ Examples:
 
   # Deploy full enterprise simulation
   $(basename "$0") --template enterprise-sim --name corp-dc --ports 22,80,443,3389
+
+  # Deploy with Splunk SIEM integration
+  $(basename "$0") --template basic-ssh --name edge-ssh --port 22 --siem splunk
+
+  # Deploy with custom SIEM config file
+  $(basename "$0") --template basic-ssh --name ssh-prod --siem /etc/honeyclaw/siem.yaml
 EOF
             exit 0
             ;;
@@ -213,6 +239,42 @@ fi
 HONEYPOT_LOG_DIR="${LOG_DIR}/${NAME}"
 mkdir -p "$HONEYPOT_LOG_DIR"
 
+# Process SIEM configuration
+if [[ "$SIEM_ENABLED" == true ]]; then
+    log_info "SIEM integration enabled"
+    
+    # If SIEM_ARG is a file, source it
+    if [[ -f "$SIEM_ARG" ]]; then
+        log_info "Loading SIEM config from: $SIEM_ARG"
+        # For YAML files, we'd need yq or similar - for now, support simple key=value
+        if [[ "$SIEM_ARG" =~ \.yaml$ || "$SIEM_ARG" =~ \.yml$ ]]; then
+            SIEM_PROVIDER=$(grep -E "^\s*provider:" "$SIEM_ARG" 2>/dev/null | awk '{print $2}' || echo "")
+            SIEM_ENDPOINT=$(grep -E "^\s*endpoint:" "$SIEM_ARG" 2>/dev/null | awk '{print $2}' || echo "")
+            # Token might be env var reference like ${SPLUNK_HEC_TOKEN}
+            SIEM_TOKEN_RAW=$(grep -E "^\s*token:" "$SIEM_ARG" 2>/dev/null | awk '{print $2}' || echo "")
+            if [[ "$SIEM_TOKEN_RAW" =~ ^\$\{([^}]+)\}$ ]]; then
+                SIEM_TOKEN="${!BASH_REMATCH[1]:-}"
+            else
+                SIEM_TOKEN="$SIEM_TOKEN_RAW"
+            fi
+        fi
+    elif [[ -n "$SIEM_ARG" ]]; then
+        # Treat as provider name if not a file
+        SIEM_PROVIDER="$SIEM_ARG"
+    fi
+    
+    # Use environment variables as fallback
+    SIEM_PROVIDER="${SIEM_PROVIDER:-$HONEYCLAW_SIEM_PROVIDER}"
+    SIEM_ENDPOINT="${SIEM_ENDPOINT:-$HONEYCLAW_SIEM_ENDPOINT}"
+    SIEM_TOKEN="${SIEM_TOKEN:-$HONEYCLAW_SIEM_TOKEN}"
+    
+    if [[ -n "$SIEM_PROVIDER" ]]; then
+        log_ok "SIEM Provider: $SIEM_PROVIDER"
+    else
+        log_warn "SIEM enabled but no provider specified. Set HONEYCLAW_SIEM_PROVIDER or use --siem <provider>"
+    fi
+fi
+
 # Deploy container
 log_info "Deploying honeypot: $NAME (template: $TEMPLATE)"
 
@@ -239,6 +301,10 @@ DOCKER_CMD=(
     -e "HONEYPOT_TEMPLATE=${TEMPLATE}"
     -e "S3_BUCKET=${S3_BUCKET}"
     -e "S3_ENDPOINT=${S3_ENDPOINT}"
+    -e "SIEM_ENABLED=${SIEM_ENABLED}"
+    -e "SIEM_PROVIDER=${SIEM_PROVIDER}"
+    -e "SIEM_ENDPOINT=${SIEM_ENDPOINT}"
+    -e "SIEM_TOKEN=${SIEM_TOKEN}"
     --label "honeyclaw.name=${NAME}"
     --label "honeyclaw.template=${TEMPLATE}"
     --label "honeyclaw.deployed=$(date -u +%Y-%m-%dT%H:%M:%SZ)"

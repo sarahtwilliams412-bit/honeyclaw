@@ -1,0 +1,270 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Honeyclaw Detection Rules for IBM QRadar
+  
+  Import via: Admin > Custom Rules > Import Rules
+  
+  Prerequisites:
+  1. Configure syslog source for Honeyclaw events (CEF or LEEF format)
+  2. Create log source type: Honeyclaw Honeypot
+  3. Import this rule file
+-->
+<rule_export>
+  <rules>
+    <!-- 
+    ========================================================================
+    HIGH SEVERITY RULES
+    ======================================================================== 
+    -->
+    
+    <rule name="Honeyclaw: Brute Force Attack" enabled="true">
+      <description>Multiple failed authentication attempts from single IP targeting honeypot</description>
+      <severity>8</severity>
+      <credibility>8</credibility>
+      <relevance>10</relevance>
+      <tests>
+        <test name="when" field="logsourcetypename" operator="equals" value="Honeyclaw Honeypot"/>
+        <test name="and" field="eventname" operator="contains" value="auth_failure"/>
+        <test name="and" field="sourceip" operator="is not null"/>
+      </tests>
+      <responses>
+        <response>
+          <offense>
+            <index_by>sourceip</index_by>
+            <offense_type>Source IP</offense_type>
+          </offense>
+          <building_block_count field="sourceip" time_unit="MINUTE" time_value="5">10</building_block_count>
+        </response>
+      </responses>
+      <groups>
+        <group>Honeyclaw</group>
+        <group>Authentication</group>
+        <group>MITRE ATT&amp;CK T1110</group>
+      </groups>
+    </rule>
+    
+    <rule name="Honeyclaw: Successful Authentication" enabled="true">
+      <description>Successful authentication to honeypot - critical indicator of compromise</description>
+      <severity>10</severity>
+      <credibility>10</credibility>
+      <relevance>10</relevance>
+      <tests>
+        <test name="when" field="logsourcetypename" operator="equals" value="Honeyclaw Honeypot"/>
+        <test name="and" field="eventname" operator="contains" value="auth_success"/>
+      </tests>
+      <responses>
+        <response>
+          <offense>
+            <index_by>sourceip</index_by>
+            <offense_type>Source IP</offense_type>
+            <offense_name>Honeypot Compromise - Auth Success</offense_name>
+          </offense>
+        </response>
+        <response>
+          <email>
+            <to_email>soc@example.com</to_email>
+            <subject>CRITICAL: Honeypot Authentication Success</subject>
+          </email>
+        </response>
+      </responses>
+      <groups>
+        <group>Honeyclaw</group>
+        <group>Critical</group>
+        <group>MITRE ATT&amp;CK T1078</group>
+      </groups>
+    </rule>
+    
+    <rule name="Honeyclaw: Command Execution" enabled="true">
+      <description>Command executed on honeypot - active exploitation</description>
+      <severity>10</severity>
+      <credibility>9</credibility>
+      <relevance>10</relevance>
+      <tests>
+        <test name="when" field="logsourcetypename" operator="equals" value="Honeyclaw Honeypot"/>
+        <test name="and" field="eventname" operator="contains" value="command"/>
+      </tests>
+      <responses>
+        <response>
+          <offense>
+            <index_by>sourceip</index_by>
+            <offense_type>Source IP</offense_type>
+            <offense_name>Honeypot Compromise - Command Execution</offense_name>
+          </offense>
+        </response>
+      </responses>
+      <groups>
+        <group>Honeyclaw</group>
+        <group>Execution</group>
+        <group>MITRE ATT&amp;CK T1059</group>
+      </groups>
+    </rule>
+    
+    <rule name="Honeyclaw: Malware Detection" enabled="true">
+      <description>Malware detected on honeypot</description>
+      <severity>10</severity>
+      <credibility>10</credibility>
+      <relevance>10</relevance>
+      <tests>
+        <test name="when" field="logsourcetypename" operator="equals" value="Honeyclaw Honeypot"/>
+        <test name="and" field="eventname" operator="contains" value="malware"/>
+      </tests>
+      <responses>
+        <response>
+          <offense>
+            <index_by>sourceip</index_by>
+            <offense_type>Source IP</offense_type>
+            <offense_name>Honeypot Malware Detection</offense_name>
+          </offense>
+        </response>
+      </responses>
+      <groups>
+        <group>Honeyclaw</group>
+        <group>Malware</group>
+        <group>MITRE ATT&amp;CK T1204</group>
+      </groups>
+    </rule>
+    
+    <rule name="Honeyclaw: Data Exfiltration" enabled="true">
+      <description>Data exfiltration attempt from honeypot</description>
+      <severity>9</severity>
+      <credibility>8</credibility>
+      <relevance>10</relevance>
+      <tests>
+        <test name="when" field="logsourcetypename" operator="equals" value="Honeyclaw Honeypot"/>
+        <test name="and" field="eventname" operator="contains" value="data_exfil"/>
+      </tests>
+      <responses>
+        <response>
+          <offense>
+            <index_by>sourceip</index_by>
+            <offense_type>Source IP</offense_type>
+          </offense>
+        </response>
+      </responses>
+      <groups>
+        <group>Honeyclaw</group>
+        <group>Exfiltration</group>
+        <group>MITRE ATT&amp;CK T1041</group>
+      </groups>
+    </rule>
+    
+    <!-- 
+    ========================================================================
+    MEDIUM SEVERITY RULES
+    ======================================================================== 
+    -->
+    
+    <rule name="Honeyclaw: Port Scan Detected" enabled="true">
+      <description>Single IP accessing multiple ports on honeypot</description>
+      <severity>5</severity>
+      <credibility>7</credibility>
+      <relevance>8</relevance>
+      <tests>
+        <test name="when" field="logsourcetypename" operator="equals" value="Honeyclaw Honeypot"/>
+        <test name="and" field="eventname" operator="contains" value="connection"/>
+        <test name="and" field="sourceip" operator="is not null"/>
+      </tests>
+      <responses>
+        <response>
+          <building_block_count field="destinationport" time_unit="MINUTE" time_value="10">5</building_block_count>
+          <offense>
+            <index_by>sourceip</index_by>
+            <offense_type>Source IP</offense_type>
+          </offense>
+        </response>
+      </responses>
+      <groups>
+        <group>Honeyclaw</group>
+        <group>Reconnaissance</group>
+        <group>MITRE ATT&amp;CK T1046</group>
+      </groups>
+    </rule>
+    
+    <rule name="Honeyclaw: Multi-Honeypot Attack" enabled="true">
+      <description>Same IP targeting multiple honeypots</description>
+      <severity>7</severity>
+      <credibility>8</credibility>
+      <relevance>9</relevance>
+      <tests>
+        <test name="when" field="logsourcetypename" operator="equals" value="Honeyclaw Honeypot"/>
+        <test name="and" field="sourceip" operator="is not null"/>
+      </tests>
+      <responses>
+        <response>
+          <building_block_count field="devicename" time_unit="MINUTE" time_value="15">2</building_block_count>
+          <offense>
+            <index_by>sourceip</index_by>
+            <offense_type>Source IP</offense_type>
+            <offense_name>Multi-Honeypot Attack Campaign</offense_name>
+          </offense>
+        </response>
+      </responses>
+      <groups>
+        <group>Honeyclaw</group>
+        <group>Campaign</group>
+        <group>MITRE ATT&amp;CK T1595</group>
+      </groups>
+    </rule>
+    
+    <rule name="Honeyclaw: Exploit Attempt" enabled="true">
+      <description>Exploit attempt detected against honeypot service</description>
+      <severity>7</severity>
+      <credibility>8</credibility>
+      <relevance>10</relevance>
+      <tests>
+        <test name="when" field="logsourcetypename" operator="equals" value="Honeyclaw Honeypot"/>
+        <test name="and" field="eventname" operator="contains" value="exploit_attempt"/>
+      </tests>
+      <responses>
+        <response>
+          <offense>
+            <index_by>sourceip</index_by>
+            <offense_type>Source IP</offense_type>
+          </offense>
+        </response>
+      </responses>
+      <groups>
+        <group>Honeyclaw</group>
+        <group>Exploit</group>
+        <group>MITRE ATT&amp;CK T1190</group>
+      </groups>
+    </rule>
+    
+    <rule name="Honeyclaw: Lateral Movement" enabled="true">
+      <description>Lateral movement indicators - internal IP accessing honeypot</description>
+      <severity>8</severity>
+      <credibility>9</credibility>
+      <relevance>10</relevance>
+      <tests>
+        <test name="when" field="logsourcetypename" operator="equals" value="Honeyclaw Honeypot"/>
+        <test name="and">
+          <test name="or" field="eventname" operator="contains" value="lateral_movement"/>
+          <test name="or" field="sourceip" operator="matches" value="^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)"/>
+        </test>
+      </tests>
+      <responses>
+        <response>
+          <offense>
+            <index_by>sourceip</index_by>
+            <offense_type>Source IP</offense_type>
+            <offense_name>Internal Lateral Movement to Honeypot</offense_name>
+          </offense>
+        </response>
+      </responses>
+      <groups>
+        <group>Honeyclaw</group>
+        <group>LateralMovement</group>
+        <group>MITRE ATT&amp;CK T1021</group>
+      </groups>
+    </rule>
+  </rules>
+  
+  <log_source_types>
+    <log_source_type>
+      <name>Honeyclaw Honeypot</name>
+      <description>Honeyclaw honeypot deception system</description>
+      <protocol>Syslog</protocol>
+      <default_severity>5</default_severity>
+    </log_source_type>
+  </log_source_types>
+</rule_export>
