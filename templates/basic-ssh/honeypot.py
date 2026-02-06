@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Simple SSH Honeypot - Logs all connection attempts
+Version: 1.1.1 (security hardened)
 """
 import asyncio
 import asyncssh
@@ -16,6 +17,13 @@ from pathlib import Path
 # Graceful shutdown handling
 shutdown_event = asyncio.Event()
 
+def handle_shutdown(signum, frame):
+    print(f"[INFO] Received signal {signum}, initiating shutdown...", flush=True)
+    shutdown_event.set()
+
+signal.signal(signal.SIGTERM, handle_shutdown)
+signal.signal(signal.SIGINT, handle_shutdown)
+
 def get_port():
     """Get port with validation"""
     try:
@@ -29,24 +37,20 @@ def get_port():
 
 PORT = get_port()
 LOG_FILE = Path(os.environ.get("LOG_PATH", "/var/log/honeypot/ssh.json"))
-HOST_KEY_PATH = Path(os.environ.get("HOST_KEY_PATH", "/data/ssh_host_key"))
+# Configurable salt for password hashing - MUST be set in production
+HASH_SALT = os.environ.get("HONEYCLAW_HASH_SALT", "")
 
-def hash_password(password: str) -> str:
-    """Hash password for safe logging (first 16 chars of SHA256)"""
-    return hashlib.sha256(password.encode()).hexdigest()[:16]
-
-def get_or_create_host_key():
-    """Get existing host key or create new one (persisted)"""
-    if HOST_KEY_PATH.exists():
-        print(f"[DEBUG] Loading existing host key from {HOST_KEY_PATH}", flush=True)
-        return asyncssh.read_private_key(str(HOST_KEY_PATH))
+def hash_credential(value: str) -> str:
+    """Hash credential with salt for safe logging.
     
-    print(f"[DEBUG] Generating new RSA host key (4096 bit)...", flush=True)
-    HOST_KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    key = asyncssh.generate_private_key('ssh-rsa', 4096)
-    asyncssh.write_private_key(key, str(HOST_KEY_PATH))
-    print(f"[DEBUG] Host key saved to {HOST_KEY_PATH}", flush=True)
-    return key
+    Uses SHA256 with configurable salt. Returns first 16 chars of hex digest.
+    Salt should be set via HONEYCLAW_HASH_SALT env var in production.
+    """
+    if not HASH_SALT:
+        print("[WARN] HONEYCLAW_HASH_SALT not set - using unsalted hash", flush=True, file=sys.stderr)
+    salted = f"{HASH_SALT}{value}".encode('utf-8')
+    return hashlib.sha256(salted).hexdigest()[:16]
+
 
 class HoneypotServer(asyncssh.SSHServer):
     def __init__(self):
@@ -75,13 +79,14 @@ class HoneypotServer(asyncssh.SSHServer):
         return True
 
     def validate_password(self, username, password):
-        # Don't log plaintext password to stdout!
+        # Hash password with salt for safe logging
+        pw_hash = hash_credential(password) if password else "empty"
         print(f"[DEBUG] Password attempt: {username}:***", flush=True)
         log_event('login_attempt', {
             'ip': self.client_ip,
             'username': username,
-            'password_hash': hash_password(password),
-            'password_length': len(password)
+            'password_hash': pw_hash,
+            'password_length': len(password) if password else 0
         })
         return False
 
@@ -117,27 +122,17 @@ def log_event(event_type, data):
         print(f"Log write error: {e}", file=sys.stderr)
 
 
-def handle_signal(sig):
-    """Handle shutdown signals gracefully"""
-    sig_name = signal.Signals(sig).name
-    print(f"[INFO] Received {sig_name}, initiating graceful shutdown...", flush=True)
-    log_event('shutdown', {'signal': sig_name, 'reason': 'signal'})
-    shutdown_event.set()
-
 async def start_server():
     """Start the SSH honeypot server"""
     try:
-        # Set up signal handlers
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            loop.add_signal_handler(sig, handle_signal, sig)
+        # Generate host key on startup
+        print("[DEBUG] Generating RSA host key...", flush=True)
+        key = asyncssh.generate_private_key('ssh-rsa', 2048)
+        print("[DEBUG] Host key generated", flush=True)
         
-        # Get or create persistent host key
-        key = get_or_create_host_key()
+        log_event('startup', {'port': PORT, 'version': '1.1.1'})
         
-        log_event('startup', {'port': PORT, 'version': '1.1.0'})
-        
-        print(f"[DEBUG] Starting SSH server on port {PORT}...", flush=True)
+        print(f"[DEBUG] Starting SSH server on 0.0.0.0:{PORT}...", flush=True)
         server = await asyncssh.create_server(
             HoneypotServer, '0.0.0.0', PORT,
             server_host_keys=[key],
@@ -148,13 +143,10 @@ async def start_server():
         
         # Wait for shutdown signal
         await shutdown_event.wait()
-        
-        # Graceful shutdown
-        print("[INFO] Closing server...", flush=True)
+        print("[INFO] Shutting down gracefully...", flush=True)
         server.close()
         await server.wait_closed()
-        log_event('stopped', {'reason': 'graceful'})
-        print("[INFO] Server stopped gracefully", flush=True)
+        log_event('shutdown', {'reason': 'signal'})
         
     except Exception as e:
         print(f"[FATAL] Server error: {e}", flush=True)
@@ -166,8 +158,7 @@ if __name__ == '__main__':
     try:
         asyncio.run(start_server())
     except KeyboardInterrupt:
-        # Already handled by signal handler, just exit cleanly
-        pass
+        print("Shutting down...")
     except Exception as e:
         print(f"[FATAL] {e}", flush=True)
         traceback.print_exc()
