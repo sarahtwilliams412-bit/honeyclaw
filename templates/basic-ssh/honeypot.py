@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Simple SSH Honeypot - Logs all connection attempts
-Version: 1.3.1 (custom SSH banner support)
+Version: 1.4.0 (real-time alerting support)
 
 Environment variables:
   PORT                       - Listen port (default: 8022)
@@ -13,6 +13,11 @@ Rate limit configuration:
   RATELIMIT_CONN_PER_MIN     - Max connections per IP per minute (default: 10)
   RATELIMIT_AUTH_PER_HOUR    - Max auth attempts per IP per hour (default: 100)
   RATELIMIT_CLEANUP_INTERVAL - Cleanup interval in seconds (default: 60)
+
+Alert configuration:
+  ALERT_WEBHOOK_URL          - Webhook URL for alerts (Slack/Discord/PagerDuty)
+  ALERT_SEVERITY_THRESHOLD   - Minimum severity (DEBUG/INFO/LOW/MEDIUM/HIGH/CRITICAL)
+  HONEYPOT_ID                - Honeypot identifier for alerts
 """
 import asyncio
 import asyncssh
@@ -30,6 +35,7 @@ from collections import defaultdict
 
 # Add parent path for common imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from common.validation import (
     validate_username,
     validate_password,
@@ -39,6 +45,15 @@ from common.validation import (
     MAX_USERNAME_LENGTH,
     MAX_PASSWORD_LENGTH,
 )
+
+# Real-time alerting (optional - fails gracefully if not configured)
+try:
+    from src.alerts.dispatcher import get_dispatcher, alert as send_alert
+    ALERTING_ENABLED = bool(os.environ.get('ALERT_WEBHOOK_URL'))
+except ImportError:
+    ALERTING_ENABLED = False
+    def send_alert(event, event_type):
+        pass  # No-op if alerting not available
 
 # =============================================================================
 # Rate Limiting
@@ -272,7 +287,7 @@ class HoneypotServer(asyncssh.SSHServer):
 
 
 def log_event(event_type, data):
-    """Log event to file and stdout"""
+    """Log event to file, stdout, and alert pipeline"""
     # Sanitize event type
     safe_event_type = sanitize_for_log(event_type, max_length=64)
     
@@ -297,6 +312,13 @@ def log_event(event_type, data):
             f.write(line + '\n')
     except Exception as e:
         print(f"Log write error: {e}", file=sys.stderr)
+    
+    # Send to real-time alert pipeline
+    if ALERTING_ENABLED:
+        try:
+            send_alert(event, safe_event_type)
+        except Exception as e:
+            print(f"[ALERT] Error: {e}", file=sys.stderr)
 
 
 async def start_server():
@@ -309,12 +331,16 @@ async def start_server():
         
         log_event('startup', {
             'port': PORT, 
-            'version': '1.3.0',
+            'version': '1.4.0',
             'rate_limiting': rate_limiter.enabled,
             'conn_limit': f'{rate_limiter.conn_per_min}/min',
             'auth_limit': f'{rate_limiter.auth_per_hour}/hr',
-            'ssh_banner': SSH_BANNER
+            'ssh_banner': SSH_BANNER,
+            'alerting_enabled': ALERTING_ENABLED,
         })
+        
+        if ALERTING_ENABLED:
+            print(f"[INFO] Real-time alerting enabled", flush=True)
         
         print(f"[DEBUG] Starting SSH server on 0.0.0.0:{PORT}...", flush=True)
         print(f"[DEBUG] SSH banner: {SSH_BANNER}", flush=True)

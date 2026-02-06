@@ -1,6 +1,6 @@
 /**
  * Honey Claw - Fake API Honeypot Server
- * Version: 1.1.0 (input validation)
+ * Version: 1.2.0 (real-time alerting)
  * 
  * Medium-interaction API honeypot that simulates a REST API
  * and logs all interactions for threat detection.
@@ -10,6 +10,11 @@
  *   RATELIMIT_CONN_PER_MIN     - Max requests per IP per minute (default: 10)
  *   RATELIMIT_AUTH_PER_HOUR    - Max auth attempts per IP per hour (default: 100)
  *   RATELIMIT_CLEANUP_INTERVAL - Cleanup interval in seconds (default: 60)
+ * 
+ * Alert configuration via environment variables:
+ *   ALERT_WEBHOOK_URL          - Webhook URL for alerts (Slack/Discord/PagerDuty)
+ *   ALERT_SEVERITY_THRESHOLD   - Minimum severity (DEBUG/INFO/LOW/MEDIUM/HIGH/CRITICAL)
+ *   HONEYPOT_ID                - Honeypot identifier for alerts
  */
 
 const express = require('express');
@@ -17,6 +22,15 @@ const helmet = require('helmet');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
 const path = require('path');
+
+// Real-time alerting (optional)
+let alertDispatcher = null;
+try {
+    const { getDispatcher } = require('./alerts');
+    alertDispatcher = getDispatcher();
+} catch (e) {
+    console.log('[INFO] Alerting module not available');
+}
 
 // =============================================================================
 // Rate Limiting (inline to avoid module resolution issues in container)
@@ -497,7 +511,7 @@ function sanitizeHeaders(headers) {
     return sanitized;
 }
 
-function appendLog(event) {
+function appendLog(event, eventType = 'api_request') {
     try {
         let line = JSON.stringify(event);
         
@@ -520,6 +534,15 @@ function appendLog(event) {
         }
         
         fs.appendFileSync(LOG_FILE, line + '\n');
+        
+        // Send to real-time alert pipeline
+        if (alertDispatcher) {
+            try {
+                alertDispatcher.processEvent(event, eventType);
+            } catch (alertErr) {
+                console.error('[ALERT] Error:', alertErr.message);
+            }
+        }
     } catch (e) {
         console.error('Failed to write log:', sanitizeForLog(e.message, 256));
     }

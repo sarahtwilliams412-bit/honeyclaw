@@ -16,7 +16,7 @@
 | 5 | SIEM/SOAR Integration | 🔥🔥 | Medium | P1 |
 | 6 | Canary Token Generator | 🔥🔥 | Low | P2 |
 | 7 | Attack Replay Dashboard | 🔥🔥 | High | P2 |
-| 8 | Threat Intel Enrichment | 🔥🔥 | Medium | P2 |
+| 8 | Threat Intel Enrichment | 🔥🔥 | Medium | ✅ DONE |
 | 9 | Container Escape Detection | 🔥 | Low | P2 |
 | 10 | Auto-Abuse Reporting | 🔥 | Low | P3 |
 
@@ -218,15 +218,15 @@ Record and replay attacker sessions like a movie:
 
 ---
 
-### 8. 🌐 Threat Intel Enrichment
+### 8. 🌐 Threat Intel Enrichment ✅ IMPLEMENTED
 Automatically enrich attacker IPs with external intelligence:
 
-- **AbuseIPDB:** Reputation score, report history
-- **Shodan:** What else is this IP running?
-- **GreyNoise:** Is this a known scanner?
-- **VirusTotal:** Domain/IP reputation
-- **OTX (AlienVault):** Pulse membership
-- **MISP:** Threat sharing communities
+- **AbuseIPDB:** Reputation score, report history ✅
+- **Shodan:** What else is this IP running? ✅
+- **GreyNoise:** Is this a known scanner? ✅
+- **VirusTotal:** Domain/IP reputation ✅
+- **OTX (AlienVault):** Pulse membership (future)
+- **MISP:** Threat sharing communities (future)
 
 ```json
 {
@@ -237,17 +237,18 @@ Automatically enrich attacker IPs with external intelligence:
     "greynoise_classification": "malicious",
     "greynoise_actor": "Mirai",
     "shodan_ports": [22, 80, 443, 8080],
-    "virustotal_detections": 12,
-    "otx_pulses": ["Mirai Botnet", "SSH Bruteforce"]
+    "virustotal_detections": 12
   }
 }
 ```
 
-**Implementation:**
-- Async enrichment pipeline
-- Caching to avoid API limits
+**Implementation:** ✅ Complete
+- Async enrichment pipeline (`src/enrichment/engine.py`)
+- Caching to avoid API limits (`src/enrichment/cache.py`)
 - Configurable provider priority
 - Free tier support (AbuseIPDB, GreyNoise community)
+- CLI tool: `honeyclaw-enrich <ip>`
+- Documentation: `docs/ENRICHMENT.md`
 
 ---
 
@@ -319,7 +320,7 @@ auto_report:
 
 **Sprint 2:**
 - [ ] #4 Attacker Fingerprinting (differentiation)
-- [ ] #8 Threat Intel Enrichment (easy wins with free APIs)
+- [x] #8 Threat Intel Enrichment (easy wins with free APIs) ✅ DONE 2026-02-06
 
 **Sprint 3:**
 - [ ] #1 AI Conversational Deception (the moonshot)
