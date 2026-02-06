@@ -11,12 +11,12 @@
 **Location:** `research/safe-mimicry-patterns.md:177-193`
 
 ```javascript
-// EXPOSED IN PUBLIC DOCUMENTATION:
+// EXAMPLE OF WHAT WAS EXPOSED (pattern shown, not actual values):
 const CANARY_DATA = {
   apiKeys: {
-    anthropic: 'sk-ant-CANARY-hc001-xxxxxxxx',
-    openai: 'sk-CANARY-hc001-xxxxxxxx',
-    aws: 'AKIAIOSFODNN7CANARY1'
+    anthropic: '<LEAKED: sk-ant-CANARY-...>',  // Hardcoded canary - INSECURE!
+    openai: '<LEAKED: sk-CANARY-...>',         // Hardcoded canary - INSECURE!
+    aws: '<LEAKED: AKIA...CANARY...>'          // Hardcoded canary - INSECURE!
   },
 ```
 

@@ -2,6 +2,13 @@
 
 > ⚠️ **DO NOT SHARE** — This document contains all flags and solutions
 
+> 🔐 **DEPLOYMENT NOTE:** All credentials, flags, and passwords below are **EXAMPLES ONLY**.  
+> Before deploying, generate unique values using `canary-generator.py` or set via environment variables:
+> - `CTF_FLAG_SALT` - Used to generate unique flags per deployment
+> - `CTF_DEV_ADMIN_PASS` - Replace `${DEV_ADMIN_PASS}`
+> - `CTF_SYSADMIN_PASS` - Replace `${SYSADMIN_PASS}`
+> - `CTF_DB_PASS` - Replace `${DB_PASS}`
+
 ---
 
 ## Flag Summary
@@ -53,18 +60,20 @@ Disallow: /.env.backup
 # Nexus Dynamics - CLAW-7 Environment Variables
 # Last updated: 2025-11-14
 
-DATABASE_URL=postgres://claw7:Cl@w7-D8-Pr0d@db.internal:5432/nexus
+DATABASE_URL=postgres://claw7:${DB_PASS}@db.internal:5432/nexus
 REDIS_URL=redis://cache.internal:6379
 OPENAI_API_KEY=sk-fake-XXXXXXXXXXXXXXXXXXXXXXXX
 
 # Dev credentials (REMOVE BEFORE PROD!!!!)
 DEV_ADMIN_USER=dev_admin
-DEV_ADMIN_PASS=NexusDyn2025!tmp
+DEV_ADMIN_PASS=${DEV_ADMIN_PASS}
 
-# FLAG{env_files_in_webroot_lol_7d2c}
+# FLAG{env_files_in_webroot_lol_${FLAG_SALT}}
 ```
 
-**Why it works:** Backup files in webroot is a top-10 misconfiguration. The credentials here (`dev_admin`/`NexusDyn2025!tmp`) unlock Silver tier endpoints.
+**Why it works:** Backup files in webroot is a top-10 misconfiguration. The credentials here (`dev_admin`/`${DEV_ADMIN_PASS}`) unlock Silver tier endpoints.
+
+**Deployment:** Set `CTF_DEV_ADMIN_PASS` and `CTF_FLAG_SALT` env vars before deploying.
 
 ---
 
@@ -120,7 +129,7 @@ INSERT INTO users VALUES
   (2, 'sysadmin', '$2b$12$YYYYY...', 'admin');
 
 -- Legacy password for sysadmin (migrated from plaintext):
--- Cl@w7-Pr0d-K3y
+-- ${SYSADMIN_PASS}
 ```
 
 **Why it works:** Backup files contain historical data. The plaintext password comment is "realistic" legacy cruft.
@@ -131,7 +140,7 @@ INSERT INTO users VALUES
 
 #### Flag 5: Agent Config
 **Location:** `GET /api/v1/agent/config`
-**Auth Required:** Yes (`dev_admin:NexusDyn2025!tmp`)
+**Auth Required:** Yes (`dev_admin:${DEV_ADMIN_PASS}`)
 **Flag:** `FLAG{agent_config_exposed_9f4a}`
 **Points:** 250
 
@@ -153,7 +162,7 @@ INSERT INTO users VALUES
 
 #### Flag 6: Agent Memory
 **Location:** `GET /api/v1/agent/memory`
-**Auth Required:** Yes (`dev_admin:NexusDyn2025!tmp`)
+**Auth Required:** Yes (`dev_admin:${DEV_ADMIN_PASS}`)
 **Flag:** `FLAG{memory_is_forever_c8d3}`
 **Points:** 350
 
@@ -171,7 +180,7 @@ INSERT INTO users VALUES
     {
       "id": "conv_893",
       "user": "sysadmin",
-      "preview": "Testing new auth flow. Password reminder: Cl@w7-Pr0d-K3y",
+      "preview": "Testing new auth flow. Password reminder: ${SYSADMIN_PASS}",
       "timestamp": "2025-11-14T16:45:00Z"
     }
   ]
@@ -186,7 +195,7 @@ INSERT INTO users VALUES
 
 #### Flag 7: System Prompt
 **Location:** `GET /api/v1/agent/system-prompt`
-**Auth Required:** Yes (`sysadmin:Cl@w7-Pr0d-K3y`)
+**Auth Required:** Yes (`sysadmin:${SYSADMIN_PASS}`)
 **Flag:** `FLAG{system_prompt_pwned_diamond_1337}`
 **Points:** 500
 

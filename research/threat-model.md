@@ -151,13 +151,21 @@ Based on m0lthoney taxonomy + Clawdstrike detection capabilities:
 ### Canary Tokens
 Embed trackable canaries that alert if exfiltrated:
 ```javascript
+// ⚠️ SECURITY: Generate unique canaries per deployment - NEVER hardcode!
+// Set via environment variables or use canary-generator.py
 const CANARY_TOKENS = {
-  anthropicKey: "sk-ant-CANARY-honeyclaw-001-XXXXXX",
-  openaiKey: "sk-CANARY-honeyclaw-001-XXXXXX",
-  awsKey: "AKIAIOSFODNN7CANARY1",
-  githubPat: "ghp_CANARY_honeyclaw_001_XXXXXXXX"
+  anthropicKey: process.env.CANARY_ANTHROPIC_KEY || generateCanary('anthropic'),
+  openaiKey: process.env.CANARY_OPENAI_KEY || generateCanary('openai'),
+  awsKey: process.env.CANARY_AWS_KEY || generateCanary('aws'),
+  githubPat: process.env.CANARY_GITHUB_PAT || generateCanary('github')
 };
 ```
+
+**Required Environment Variables:**
+- `CANARY_ANTHROPIC_KEY` - Format: `sk-ant-CANARY-<unique-id>`
+- `CANARY_OPENAI_KEY` - Format: `sk-CANARY-<unique-id>`
+- `CANARY_AWS_KEY` - Format: `AKIA<16-random-chars>`
+- `CANARY_GITHUB_PAT` - Format: `ghp_<unique-id>`
 
 Use services like Canarytokens.org or AWS CloudTrail for leak detection.
 

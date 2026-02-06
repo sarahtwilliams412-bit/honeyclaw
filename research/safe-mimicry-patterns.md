@@ -315,16 +315,16 @@ function generateCanaryData() {
       aws: `AKIA${crypto.randomBytes(16).toString('base64').slice(0,16)}`
     },
   
-  // Fake credentials
+  // Fake credentials - generate unique values per deployment!
   credentials: {
-    admin: { user: 'admin', pass: 'OpenClaw2026!' },
-    root: { user: 'root', pass: 'toor' }
+    admin: { user: 'admin', pass: process.env.HONEYPOT_ADMIN_PASS || generatePassword() },
+    root: { user: 'root', pass: process.env.HONEYPOT_ROOT_PASS || generatePassword() }
   },
   
-  // Fake webhook URLs (will alert if called)
+  // Fake webhook URLs (will alert if called) - use your own canary domain!
   webhooks: {
-    discord: 'https://canary.honeyclaw.io/discord/hc001',
-    slack: 'https://canary.honeyclaw.io/slack/hc001'
+    discord: process.env.CANARY_WEBHOOK_DISCORD || `https://${YOUR_CANARY_DOMAIN}/discord/${deploymentId}`,
+    slack: process.env.CANARY_WEBHOOK_SLACK || `https://${YOUR_CANARY_DOMAIN}/slack/${deploymentId}`
   }
 };
 ```
