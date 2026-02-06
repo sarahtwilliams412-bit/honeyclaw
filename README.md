@@ -206,15 +206,134 @@ tail -f /var/log/honeypot/ssh.json
 - Use network segmentation
 - Regularly rotate honeypot instances
 
+## 🌐 Geo-Distributed Mesh
+
+Deploy honeypots across multiple regions for **cross-region attacker correlation**. Detect sophisticated attackers probing your infrastructure from multiple locations.
+
+### Quick Deploy (3 Regions)
+
+```bash
+# Deploy to US-West, US-East, and Europe
+./scripts/deploy-mesh.sh
+
+# Or specify custom regions
+./scripts/deploy-mesh.sh sjc iad ams sin  # US-West, US-East, Amsterdam, Singapore
+```
+
+### Mesh Architecture
+
+```
+                    ┌─────────────────────────────────┐
+                    │     Mesh Coordinator            │
+                    │  (Central IOC Database)         │
+                    │  - Attacker correlation         │
+                    │  - Cross-region alerts          │
+                    │  - Threat scoring               │
+                    └───────────────┬─────────────────┘
+                                    │
+          ┌─────────────────────────┼─────────────────────────┐
+          │                         │                         │
+          ▼                         ▼                         ▼
+┌─────────────────┐      ┌─────────────────┐      ┌─────────────────┐
+│   US-West Node  │      │   US-East Node  │      │   EU-Central    │
+│   (sjc)         │      │   (iad)         │      │   (ams)         │
+│                 │      │                 │      │                 │
+│ - SSH Honeypot  │      │ - SSH Honeypot  │      │ - SSH Honeypot  │
+│ - Event logging │      │ - Event logging │      │ - Event logging │
+└─────────────────┘      └─────────────────┘      └─────────────────┘
+```
+
+### Mesh Configuration
+
+Add mesh configuration to your `honeyclaw.yaml`:
+
+```yaml
+mesh:
+  enabled: true
+  coordinator_url: https://honeyclaw-coordinator.fly.dev
+  node_id: auto  # Auto-generate from hostname + region
+  region: us-west
+  heartbeat_interval: 30
+  batch_size: 50
+
+# Standard honeypot config continues below...
+storage:
+  type: s3
+  bucket: honeyclaw-logs
+```
+
+### Environment Variables (Mesh)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MESH_ENABLED` | `false` | Enable mesh mode |
+| `MESH_COORDINATOR_URL` | - | Coordinator API URL |
+| `MESH_TOKEN` | - | Authentication token |
+| `MESH_NODE_ID` | auto | Node identifier |
+| `MESH_REGION` | - | Deployment region |
+| `MESH_HEARTBEAT_SEC` | `30` | Heartbeat interval |
+
+### Cross-Region Correlation
+
+When an attacker is detected in **multiple regions**, threat score increases:
+
+| Regions | Base Score | Multi-Region Bonus | Total |
+|---------|------------|-------------------|-------|
+| 1 | 30 | +0 | 30 |
+| 2 | 30 | +25 | 55 |
+| 3+ | 30 | +40 | 70+ |
+
+### Monitor Your Mesh
+
+```bash
+# Check mesh status
+curl https://honeyclaw-coordinator.fly.dev/health
+
+# View active nodes
+curl -H "Authorization: Bearer $MESH_TOKEN" \
+  https://honeyclaw-coordinator.fly.dev/nodes
+
+# Get mesh statistics
+curl -H "Authorization: Bearer $MESH_TOKEN" \
+  https://honeyclaw-coordinator.fly.dev/stats
+
+# List multi-region attackers
+curl -H "Authorization: Bearer $MESH_TOKEN" \
+  "https://honeyclaw-coordinator.fly.dev/attackers?multi_region=true"
+
+# Get IOCs
+curl -H "Authorization: Bearer $MESH_TOKEN" \
+  "https://honeyclaw-coordinator.fly.dev/iocs?min_confidence=0.7"
+```
+
+### API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check (no auth) |
+| `/stats` | GET | Mesh statistics |
+| `/nodes` | GET | List active nodes |
+| `/nodes/register` | POST | Register new node |
+| `/nodes/heartbeat` | POST | Node heartbeat |
+| `/events` | POST | Record single event |
+| `/events/batch` | POST | Record batch of events |
+| `/attackers` | GET | List attacker profiles |
+| `/iocs` | GET/POST | IOC database |
+| `/alerts` | GET | Correlation alerts |
+
+---
+
 ## Roadmap
 
 - [x] Basic SSH honeypot template
 - [x] Fake API honeypot template
 - [x] S3-compatible log storage
+- [x] **Distributed honeypot mesh** ✨ NEW
+- [x] **Cross-region attacker correlation** ✨ NEW
+- [x] **Shared IOC database** ✨ NEW
 - [ ] AI-powered dynamic responses
 - [ ] Automatic IOC extraction
 - [ ] Integration with threat intel feeds
-- [ ] Distributed honeypot mesh
 - [ ] Real-time Slack/Discord alerts
 
 ## License

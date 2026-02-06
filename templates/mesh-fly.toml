@@ -1,0 +1,125 @@
+# Honey Claw - Multi-Region Mesh Deployment Template
+# Deploy honeypots across multiple Fly.io regions for geo-distributed detection
+#
+# Usage:
+#   1. Copy this template: cp templates/mesh-fly.toml fly.toml
+#   2. Update app name and regions
+#   3. Set secrets: fly secrets set MESH_TOKEN=your-secret-token
+#   4. Deploy: fly deploy --config fly.toml
+#
+# For automated multi-region deployment, use: scripts/deploy-mesh.sh
+
+app = "honeyclaw-mesh-REGION"  # Replace REGION with actual region code
+
+primary_region = "sjc"  # Primary region for coordinator
+
+[build]
+  dockerfile = "Dockerfile.mesh"
+
+# =============================================================================
+# Mesh Coordinator (runs in primary region only)
+# =============================================================================
+[[services]]
+  internal_port = 8443
+  protocol = "tcp"
+  
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port = 443
+  
+  [[services.ports]]
+    handlers = ["http"]
+    port = 80
+  
+  [services.concurrency]
+    hard_limit = 1000
+    soft_limit = 500
+    type = "connections"
+  
+  [[services.http_checks]]
+    interval = 10000
+    grace_period = "30s"
+    method = "get"
+    path = "/health"
+    protocol = "http"
+    timeout = 5000
+
+# =============================================================================
+# SSH Honeypot Service
+# =============================================================================
+[[services]]
+  internal_port = 8022
+  protocol = "tcp"
+  
+  [[services.ports]]
+    port = 2222
+  
+  [services.concurrency]
+    hard_limit = 200
+    soft_limit = 100
+    type = "connections"
+
+# =============================================================================
+# Environment Configuration
+# =============================================================================
+[env]
+  # Mesh Configuration
+  MESH_ENABLED = "true"
+  MESH_HEARTBEAT_SEC = "30"
+  MESH_BATCH_SIZE = "50"
+  
+  # Node Configuration (region is set per-deployment)
+  # MESH_REGION = "us-west"  # Set via deploy script
+  # MESH_COORDINATOR_URL = "https://honeyclaw-coordinator.fly.dev"
+  
+  # Honeypot Configuration
+  PORT = "8022"
+  LOG_PATH = "/data/logs/honeypot.json"
+  SSH_BANNER = "OpenSSH_8.9p1 Ubuntu-3ubuntu0.6"
+  
+  # Rate Limiting
+  RATELIMIT_ENABLED = "true"
+  RATELIMIT_CONN_PER_MIN = "20"
+  RATELIMIT_AUTH_PER_HOUR = "200"
+
+# =============================================================================
+# Persistent Storage
+# =============================================================================
+[mounts]
+  source = "honeyclaw_data"
+  destination = "/data"
+
+# =============================================================================
+# Machine Configuration
+# =============================================================================
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 512
+
+# =============================================================================
+# Multi-Region Deployment
+# =============================================================================
+# To deploy across regions, use the deploy-mesh.sh script or:
+#
+#   # Create app
+#   fly apps create honeyclaw-mesh-us-west
+#   
+#   # Deploy to multiple regions
+#   fly deploy --config fly.toml --region sjc   # US West
+#   fly deploy --config fly.toml --region iad   # US East  
+#   fly deploy --config fly.toml --region ams   # Europe
+#   fly deploy --config fly.toml --region sin   # Asia
+#
+# Each region gets its own machine with shared coordinator
+
+# =============================================================================
+# Secrets Required
+# =============================================================================
+# Set these before deploying:
+#
+#   fly secrets set MESH_TOKEN=your-secure-mesh-token
+#   fly secrets set COORDINATOR_TOKEN=your-coordinator-token
+#
+# Optional:
+#   fly secrets set SLACK_WEBHOOK_URL=https://hooks.slack.com/...

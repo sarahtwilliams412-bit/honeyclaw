@@ -1,0 +1,45 @@
+# Honey Claw Mesh - Multi-Region Honeypot Dockerfile
+# Supports both coordinator and node modes
+
+FROM python:3.11-slim
+
+LABEL maintainer="honeyclaw"
+LABEL version="1.0.0"
+LABEL description="Honey Claw Geo-Distributed Mesh Node"
+
+# Install dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tini \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create directories
+RUN mkdir -p /app /data/logs /data/mesh
+
+WORKDIR /app
+
+# Install Python dependencies
+COPY requirements-mesh.txt ./
+RUN pip install --no-cache-dir -r requirements-mesh.txt
+
+# Copy application code
+COPY src/mesh/ ./mesh/
+COPY templates/basic-ssh/honeypot.py ./honeypot.py
+COPY templates/common/ ./common/
+
+# Copy startup script
+COPY scripts/mesh-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Create non-root user
+RUN useradd -r -s /bin/false honeypot
+RUN chown -R honeypot:honeypot /app /data
+
+USER honeypot
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:8443/health || curl -f http://localhost:8022/health || exit 1
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["/entrypoint.sh"]
