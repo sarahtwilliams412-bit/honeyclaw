@@ -1,8 +1,15 @@
 /**
  * Honey Claw - Fake API Honeypot Server
+ * Version: 1.1.0 (input validation)
  * 
  * Medium-interaction API honeypot that simulates a REST API
  * and logs all interactions for threat detection.
+ * 
+ * Rate limit configuration via environment variables:
+ *   RATELIMIT_ENABLED          - Enable rate limiting (default: true)
+ *   RATELIMIT_CONN_PER_MIN     - Max requests per IP per minute (default: 10)
+ *   RATELIMIT_AUTH_PER_HOUR    - Max auth attempts per IP per hour (default: 100)
+ *   RATELIMIT_CLEANUP_INTERVAL - Cleanup interval in seconds (default: 60)
  */
 
 const express = require('express');
@@ -10,6 +17,251 @@ const helmet = require('helmet');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
 const path = require('path');
+
+// =============================================================================
+// Rate Limiting (inline to avoid module resolution issues in container)
+// =============================================================================
+class RateLimiter {
+    constructor() {
+        this.enabled = (process.env.RATELIMIT_ENABLED || 'true').toLowerCase() === 'true';
+        this.connPerMin = parseInt(process.env.RATELIMIT_CONN_PER_MIN || '10', 10);
+        this.authPerHour = parseInt(process.env.RATELIMIT_AUTH_PER_HOUR || '100', 10);
+        this.cleanupInterval = parseInt(process.env.RATELIMIT_CLEANUP_INTERVAL || '60', 10);
+        
+        this._connCounts = new Map();
+        this._authCounts = new Map();
+        this._blockedConns = 0;
+        this._blockedAuths = 0;
+        
+        this._cleanupTimer = setInterval(() => this._cleanup(), this.cleanupInterval * 1000);
+        
+        if (this.enabled) {
+            console.log(`[INFO] Rate limiting enabled: ${this.connPerMin}/min connections, ${this.authPerHour}/hr auth`);
+        }
+    }
+    
+    checkConnection(ip) {
+        if (!this.enabled) return { allowed: true };
+        
+        const now = Date.now();
+        const minuteAgo = now - 60000;
+        
+        let timestamps = this._connCounts.get(ip) || [];
+        timestamps = timestamps.filter(t => t > minuteAgo);
+        
+        if (timestamps.length >= this.connPerMin) {
+            this._blockedConns++;
+            this._logRateLimit('connection', ip, timestamps.length, this.connPerMin, '1m');
+            this._connCounts.set(ip, timestamps);
+            return { allowed: false, reason: `Connection rate limit exceeded (${this.connPerMin}/min)` };
+        }
+        
+        timestamps.push(now);
+        this._connCounts.set(ip, timestamps);
+        return { allowed: true };
+    }
+    
+    checkAuth(ip) {
+        if (!this.enabled) return { allowed: true };
+        
+        const now = Date.now();
+        const hourAgo = now - 3600000;
+        
+        let timestamps = this._authCounts.get(ip) || [];
+        timestamps = timestamps.filter(t => t > hourAgo);
+        
+        if (timestamps.length >= this.authPerHour) {
+            this._blockedAuths++;
+            this._logRateLimit('auth', ip, timestamps.length, this.authPerHour, '1h');
+            this._authCounts.set(ip, timestamps);
+            return { allowed: false, reason: `Auth rate limit exceeded (${this.authPerHour}/hour)` };
+        }
+        
+        timestamps.push(now);
+        this._authCounts.set(ip, timestamps);
+        return { allowed: true };
+    }
+    
+    _logRateLimit(type, ip, count, limit, window) {
+        const event = {
+            timestamp: new Date().toISOString(),
+            event: `rate_limit_${type}`,
+            ip,
+            count,
+            limit,
+            window,
+            total_blocked: type === 'connection' ? this._blockedConns : this._blockedAuths
+        };
+        console.log(JSON.stringify(event));
+        appendLog(event);
+    }
+    
+    _cleanup() {
+        const now = Date.now();
+        const minuteAgo = now - 60000;
+        const hourAgo = now - 3600000;
+        
+        for (const [ip, timestamps] of this._connCounts.entries()) {
+            const valid = timestamps.filter(t => t > minuteAgo);
+            if (valid.length === 0) this._connCounts.delete(ip);
+            else this._connCounts.set(ip, valid);
+        }
+        
+        for (const [ip, timestamps] of this._authCounts.entries()) {
+            const valid = timestamps.filter(t => t > hourAgo);
+            if (valid.length === 0) this._authCounts.delete(ip);
+            else this._authCounts.set(ip, valid);
+        }
+    }
+    
+    getStats() {
+        return {
+            enabled: this.enabled,
+            config: { connPerMin: this.connPerMin, authPerHour: this.authPerHour },
+            blocked: { connections: this._blockedConns, auths: this._blockedAuths }
+        };
+    }
+}
+
+const rateLimiter = new RateLimiter();
+
+// =============================================================================
+// Input Validation Utilities
+// =============================================================================
+const VALIDATION_LIMITS = {
+    MAX_USERNAME_LENGTH: 256,
+    MAX_PASSWORD_LENGTH: 1024,
+    MAX_PATH_LENGTH: 4096,
+    MAX_HEADER_LENGTH: 8192,
+    MAX_BODY_LENGTH: 65536,  // 64KB
+    MAX_LOG_LINE_LENGTH: 16384,  // 16KB
+    MAX_QUERY_PARAM_LENGTH: 1024
+};
+
+function sanitizeForLog(text, maxLength = 1024) {
+    if (text === null || text === undefined) return '<null>';
+    if (typeof text !== 'string') {
+        try {
+            text = String(text);
+        } catch {
+            return '<unconvertible>';
+        }
+    }
+    
+    // Truncate first
+    text = text.slice(0, maxLength);
+    
+    // Replace control characters
+    return text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, char => 
+        `\\x${char.charCodeAt(0).toString(16).padStart(2, '0')}`
+    );
+}
+
+function validateIp(ip) {
+    if (!ip || typeof ip !== 'string') return { ip: 'unknown', valid: false };
+    
+    ip = ip.slice(0, 64);  // Max reasonable length
+    
+    // IPv4 pattern
+    const ipv4Pattern = /^(\d{1,3}\.){3}\d{1,3}$/;
+    // IPv6 pattern (simplified)
+    const ipv6Pattern = /^[0-9a-fA-F:]+$/;
+    
+    if (ipv4Pattern.test(ip)) {
+        const octets = ip.split('.').map(Number);
+        const valid = octets.every(o => o >= 0 && o <= 255);
+        return { ip, valid };
+    }
+    if (ipv6Pattern.test(ip)) {
+        return { ip, valid: true };
+    }
+    
+    return { ip: sanitizeForLog(ip, 64), valid: false };
+}
+
+function validateUsername(username) {
+    if (username === null || username === undefined) return { value: '<null>', valid: false };
+    if (typeof username !== 'string') return { value: '<invalid-type>', valid: false };
+    
+    const valid = username.length <= VALIDATION_LIMITS.MAX_USERNAME_LENGTH;
+    const sanitized = username.slice(0, VALIDATION_LIMITS.MAX_USERNAME_LENGTH)
+        .replace(/[^a-zA-Z0-9._@+\-]/g, '_');
+    
+    return { value: sanitized || '<empty>', valid };
+}
+
+function validatePassword(password) {
+    if (password === null || password === undefined) return { length: 0, valid: true };
+    if (typeof password !== 'string') return { length: -1, valid: false };
+    
+    const valid = password.length <= VALIDATION_LIMITS.MAX_PASSWORD_LENGTH;
+    return { length: Math.min(password.length, VALIDATION_LIMITS.MAX_PASSWORD_LENGTH), valid };
+}
+
+function sanitizePath(path) {
+    if (!path || typeof path !== 'string') return { value: '/', valid: true };
+    
+    const valid = path.length <= VALIDATION_LIMITS.MAX_PATH_LENGTH;
+    let sanitized = path.slice(0, VALIDATION_LIMITS.MAX_PATH_LENGTH);
+    
+    // Remove path traversal for logging
+    sanitized = sanitized.replace(/\.\.\//g, '_parent_/');
+    sanitized = sanitized.replace(/\.\.\\/g, '_parent_\\');
+    sanitized = sanitized.replace(/\x00/g, '');
+    
+    return { value: sanitized, valid };
+}
+
+function sanitizeQueryParams(query) {
+    if (!query || typeof query !== 'object') return {};
+    
+    const sanitized = {};
+    let count = 0;
+    
+    for (const [key, value] of Object.entries(query)) {
+        if (count >= 50) {
+            sanitized._truncated = true;
+            break;
+        }
+        
+        const safeKey = sanitizeForLog(key, 256);
+        let safeValue;
+        
+        if (typeof value === 'string') {
+            safeValue = sanitizeForLog(value, VALIDATION_LIMITS.MAX_QUERY_PARAM_LENGTH);
+        } else if (Array.isArray(value)) {
+            safeValue = value.slice(0, 10).map(v => 
+                sanitizeForLog(String(v), VALIDATION_LIMITS.MAX_QUERY_PARAM_LENGTH)
+            );
+        } else {
+            safeValue = sanitizeForLog(String(value), VALIDATION_LIMITS.MAX_QUERY_PARAM_LENGTH);
+        }
+        
+        sanitized[safeKey] = safeValue;
+        count++;
+    }
+    
+    return sanitized;
+}
+
+function sanitizeBody(body, maxLength = VALIDATION_LIMITS.MAX_BODY_LENGTH) {
+    if (!body) return null;
+    
+    // For objects, stringify and truncate
+    if (typeof body === 'object') {
+        try {
+            const str = JSON.stringify(body);
+            if (str.length > maxLength) {
+                return { _truncated: true, _original_length: str.length, preview: str.slice(0, 1024) };
+            }
+            return body;
+        } catch {
+            return { _error: 'stringify-failed' };
+        }
+    }
+    
+    return sanitizeForLog(String(body), maxLength);
+}
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -24,27 +276,68 @@ app.use(helmet());
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// Request logging middleware
+// Rate limiting middleware
 app.use((req, res, next) => {
+    const ip = req.ip || req.connection.remoteAddress || 'unknown';
+    const result = rateLimiter.checkConnection(ip);
+    
+    if (!result.allowed) {
+        console.log(`[RATELIMIT] Request blocked from ${ip}: ${result.reason}`);
+        return res.status(429).json({
+            error: 'Too Many Requests',
+            message: result.reason,
+            retry_after: 60
+        });
+    }
+    next();
+});
+
+// Request logging middleware with input validation
+app.use((req, res, next) => {
+    // Validate source IP
+    const rawIp = req.ip || req.connection.remoteAddress || 'unknown';
+    const { ip: safeIp, valid: ipValid } = validateIp(rawIp);
+    
+    // Validate and sanitize path
+    const { value: safePath, valid: pathValid } = sanitizePath(req.path);
+    
+    // Sanitize query params
+    const safeQuery = sanitizeQueryParams(req.query);
+    
+    // Sanitize body
+    const safeBody = sanitizeBody(req.body);
+    
     const event = {
         timestamp: new Date().toISOString(),
         honeypot_id: HONEYPOT_ID,
         template: 'fake-api',
         request_id: uuidv4(),
         source: {
-            ip: req.ip || req.connection.remoteAddress,
-            port: req.connection.remotePort
+            ip: safeIp,
+            ip_valid: ipValid,
+            port: req.connection.remotePort || 0
         },
         request: {
-            method: req.method,
-            path: req.path,
-            query: req.query,
+            method: sanitizeForLog(req.method, 16),
+            path: safePath,
+            path_valid: pathValid,
+            query: safeQuery,
             headers: sanitizeHeaders(req.headers),
-            body: req.body
+            body: safeBody
         },
         auth: extractAuth(req),
         detection: detectThreats(req)
     };
+    
+    // Ensure log line isn't too large
+    let logLine = JSON.stringify(event);
+    if (logLine.length > VALIDATION_LIMITS.MAX_LOG_LINE_LENGTH) {
+        event._truncated = true;
+        event._original_length = logLine.length;
+        // Remove body to fit
+        event.request.body = { _removed: 'log_too_large' };
+        logLine = JSON.stringify(event);
+    }
     
     // Log to file
     appendLog(event);
@@ -122,26 +415,55 @@ function extractAuth(req) {
     const auth = {};
     
     if (req.headers.authorization) {
-        auth.header = req.headers.authorization;
+        // Sanitize auth header for logging (may contain encoded creds)
+        auth.header = sanitizeForLog(req.headers.authorization, 256);
+        auth.header_length = req.headers.authorization.length;
+        auth.header_truncated = req.headers.authorization.length > 256;
         
         if (req.headers.authorization.startsWith('Bearer ')) {
             auth.type = 'bearer';
-            auth.token = req.headers.authorization.slice(7);
+            // Don't log full token, just first 32 chars
+            const token = req.headers.authorization.slice(7);
+            auth.token_preview = sanitizeForLog(token.slice(0, 32), 32);
+            auth.token_length = token.length;
         } else if (req.headers.authorization.startsWith('Basic ')) {
             auth.type = 'basic';
             try {
-                const decoded = Buffer.from(req.headers.authorization.slice(6), 'base64').toString();
-                const [user, pass] = decoded.split(':');
-                auth.username = user;
-                auth.password = pass;
+                const encoded = req.headers.authorization.slice(6);
+                // Limit encoded portion to prevent DoS
+                if (encoded.length > 4096) {
+                    auth.decode_error = 'too_large';
+                } else {
+                    const decoded = Buffer.from(encoded, 'base64').toString();
+                    const colonIndex = decoded.indexOf(':');
+                    if (colonIndex === -1) {
+                        auth.decode_error = 'no_colon';
+                    } else {
+                        const user = decoded.slice(0, colonIndex);
+                        const pass = decoded.slice(colonIndex + 1);
+                        
+                        // Validate username
+                        const { value: safeUser, valid: userValid } = validateUsername(user);
+                        auth.username = safeUser;
+                        auth.username_valid = userValid;
+                        
+                        // Validate password (don't log content)
+                        const { length: passLen, valid: passValid } = validatePassword(pass);
+                        auth.password_length = passLen;
+                        auth.password_valid = passValid;
+                    }
+                }
             } catch (e) {
-                auth.decode_error = true;
+                auth.decode_error = sanitizeForLog(e.message, 64);
             }
         }
     }
     
     if (req.headers['x-api-key']) {
-        auth.api_key = req.headers['x-api-key'];
+        // Don't log full API key
+        const key = req.headers['x-api-key'];
+        auth.api_key_preview = sanitizeForLog(key.slice(0, 16), 16);
+        auth.api_key_length = key.length;
     }
     
     return Object.keys(auth).length > 0 ? auth : null;
@@ -158,7 +480,18 @@ function sanitizeHeaders(headers) {
     const sanitized = {};
     for (const header of keep) {
         if (headers[header]) {
-            sanitized[header] = headers[header];
+            // Sanitize header value with length limit
+            const value = headers[header];
+            const maxLen = header === 'authorization' || header === 'x-api-key' 
+                ? 256  // Shorter for sensitive headers
+                : VALIDATION_LIMITS.MAX_HEADER_LENGTH;
+            
+            sanitized[header] = sanitizeForLog(String(value), maxLen);
+            
+            // Note if truncated
+            if (String(value).length > maxLen) {
+                sanitized[`${header}_truncated`] = true;
+            }
         }
     }
     return sanitized;
@@ -166,9 +499,29 @@ function sanitizeHeaders(headers) {
 
 function appendLog(event) {
     try {
-        fs.appendFileSync(LOG_FILE, JSON.stringify(event) + '\n');
+        let line = JSON.stringify(event);
+        
+        // Final safety check on log line length
+        if (line.length > VALIDATION_LIMITS.MAX_LOG_LINE_LENGTH) {
+            const truncatedEvent = {
+                timestamp: event.timestamp,
+                honeypot_id: event.honeypot_id,
+                template: event.template,
+                request_id: event.request_id,
+                _truncated: true,
+                _original_length: line.length,
+                source: event.source,
+                request: {
+                    method: event.request?.method,
+                    path: event.request?.path
+                }
+            };
+            line = JSON.stringify(truncatedEvent);
+        }
+        
+        fs.appendFileSync(LOG_FILE, line + '\n');
     } catch (e) {
-        console.error('Failed to write log:', e.message);
+        console.error('Failed to write log:', sanitizeForLog(e.message, 256));
     }
 }
 
@@ -202,8 +555,40 @@ app.get('/.well-known/openapi.json', async (req, res) => {
 
 // Auth endpoints
 app.post('/api/v1/auth/login', async (req, res) => {
+    const ip = req.ip || req.connection.remoteAddress || 'unknown';
+    const { ip: safeIp, valid: ipValid } = validateIp(ip);
+    
+    // Check auth rate limit
+    const authResult = rateLimiter.checkAuth(safeIp);
+    if (!authResult.allowed) {
+        console.log(`[RATELIMIT] Auth blocked from ${safeIp}: ${authResult.reason}`);
+        return res.status(429).json({
+            error: 'Too Many Requests',
+            message: authResult.reason,
+            retry_after: 3600
+        });
+    }
+    
     await delay();
-    const { username, password } = req.body;
+    const { username, password } = req.body || {};
+    
+    // Validate and log credentials (for threat intel)
+    const { value: safeUser, valid: userValid } = validateUsername(username);
+    const { length: passLen, valid: passValid } = validatePassword(password);
+    
+    // Log the auth attempt with validated data
+    appendLog({
+        timestamp: new Date().toISOString(),
+        honeypot_id: HONEYPOT_ID,
+        event: 'auth_attempt',
+        source_ip: safeIp,
+        source_ip_valid: ipValid,
+        username: safeUser,
+        username_valid: userValid,
+        password_length: passLen,
+        password_valid: passValid,
+        suspicious: !userValid || !passValid
+    });
     
     // Always return a fake token (honeypot behavior)
     res.json({
@@ -294,8 +679,15 @@ app.use((err, req, res, next) => {
     res.status(500).json({ error: 'Internal server error' });
 });
 
+// Rate limiter stats endpoint (internal use)
+app.get('/internal/ratelimit-stats', (req, res) => {
+    res.json(rateLimiter.getStats());
+});
+
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Honey Claw Fake API running on port ${PORT}`);
+    console.log(`Honey Claw Fake API running on port ${PORT} (v1.1.0)`);
     console.log(`Honeypot ID: ${HONEYPOT_ID}`);
+    console.log(`Rate limiting: ${rateLimiter.enabled ? 'enabled' : 'disabled'} (${rateLimiter.connPerMin}/min, ${rateLimiter.authPerHour}/hr auth)`);
+    console.log(`Input validation: enabled`);
 });

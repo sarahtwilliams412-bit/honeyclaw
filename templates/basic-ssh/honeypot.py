@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
 Simple SSH Honeypot - Logs all connection attempts
-Version: 1.1.1 (security hardened)
+Version: 1.3.0 (input validation + rate limiting)
+
+Rate limit configuration via environment variables:
+  RATELIMIT_ENABLED          - Enable rate limiting (default: true)
+  RATELIMIT_CONN_PER_MIN     - Max connections per IP per minute (default: 10)
+  RATELIMIT_AUTH_PER_HOUR    - Max auth attempts per IP per hour (default: 100)
+  RATELIMIT_CLEANUP_INTERVAL - Cleanup interval in seconds (default: 60)
 """
 import asyncio
 import asyncssh
@@ -10,9 +16,104 @@ import json
 import os
 import signal
 import sys
+import time
+import threading
 import traceback
 from datetime import datetime
 from pathlib import Path
+from collections import defaultdict
+
+# Add parent path for common imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from common.validation import (
+    validate_username,
+    validate_password,
+    validate_ip,
+    validate_ssh_fingerprint,
+    sanitize_for_log,
+    MAX_USERNAME_LENGTH,
+    MAX_PASSWORD_LENGTH,
+)
+
+# =============================================================================
+# Rate Limiting
+# =============================================================================
+class RateLimiter:
+    """In-memory per-IP rate limiter with configurable limits."""
+    
+    def __init__(self):
+        self.enabled = os.environ.get('RATELIMIT_ENABLED', 'true').lower() == 'true'
+        self.conn_per_min = int(os.environ.get('RATELIMIT_CONN_PER_MIN', '10'))
+        self.auth_per_hour = int(os.environ.get('RATELIMIT_AUTH_PER_HOUR', '100'))
+        self.cleanup_interval = int(os.environ.get('RATELIMIT_CLEANUP_INTERVAL', '60'))
+        
+        self._conn_counts = defaultdict(list)
+        self._auth_counts = defaultdict(list)
+        self._lock = threading.Lock()
+        self._blocked_conns = 0
+        self._blocked_auths = 0
+        
+        self._stop_cleanup = threading.Event()
+        self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
+        self._cleanup_thread.start()
+        
+        if self.enabled:
+            print(f"[INFO] Rate limiting enabled: {self.conn_per_min}/min connections, {self.auth_per_hour}/hr auth", flush=True)
+    
+    def check_connection(self, ip: str):
+        if not self.enabled:
+            return True, None
+        now = time.time()
+        minute_ago = now - 60
+        with self._lock:
+            self._conn_counts[ip] = [t for t in self._conn_counts[ip] if t > minute_ago]
+            if len(self._conn_counts[ip]) >= self.conn_per_min:
+                self._blocked_conns += 1
+                return False, f"Connection rate limit exceeded ({self.conn_per_min}/min)"
+            self._conn_counts[ip].append(now)
+        return True, None
+    
+    def check_auth(self, ip: str):
+        if not self.enabled:
+            return True, None
+        now = time.time()
+        hour_ago = now - 3600
+        with self._lock:
+            self._auth_counts[ip] = [t for t in self._auth_counts[ip] if t > hour_ago]
+            if len(self._auth_counts[ip]) >= self.auth_per_hour:
+                self._blocked_auths += 1
+                return False, f"Auth rate limit exceeded ({self.auth_per_hour}/hour)"
+            self._auth_counts[ip].append(now)
+        return True, None
+    
+    def log_blocked(self, event_type: str, ip: str, count: int, limit: int, window: str):
+        """Log a rate limit block event"""
+        total = self._blocked_conns if event_type == 'connection' else self._blocked_auths
+        log_event(f'rate_limit_{event_type}', {
+            'ip': ip, 'count': count, 'limit': limit, 
+            'window': window, 'total_blocked': total
+        })
+    
+    def _cleanup_loop(self):
+        while not self._stop_cleanup.wait(self.cleanup_interval):
+            self._cleanup()
+    
+    def _cleanup(self):
+        now = time.time()
+        with self._lock:
+            for ip in list(self._conn_counts.keys()):
+                self._conn_counts[ip] = [t for t in self._conn_counts[ip] if t > now - 60]
+                if not self._conn_counts[ip]:
+                    del self._conn_counts[ip]
+            for ip in list(self._auth_counts.keys()):
+                self._auth_counts[ip] = [t for t in self._auth_counts[ip] if t > now - 3600]
+                if not self._auth_counts[ip]:
+                    del self._auth_counts[ip]
+    
+    def shutdown(self):
+        self._stop_cleanup.set()
+
+rate_limiter = RateLimiter()
 
 # Graceful shutdown handling
 shutdown_event = asyncio.Event()
@@ -37,56 +138,92 @@ def get_port():
 
 PORT = get_port()
 LOG_FILE = Path(os.environ.get("LOG_PATH", "/var/log/honeypot/ssh.json"))
-# Configurable salt for password hashing - MUST be set in production
-HASH_SALT = os.environ.get("HONEYCLAW_HASH_SALT", "")
 
-def hash_credential(value: str) -> str:
-    """Hash credential with salt for safe logging.
-    
-    Uses SHA256 with configurable salt. Returns first 16 chars of hex digest.
-    Salt should be set via HONEYCLAW_HASH_SALT env var in production.
-    """
-    if not HASH_SALT:
-        print("[WARN] HONEYCLAW_HASH_SALT not set - using unsalted hash", flush=True, file=sys.stderr)
-    salted = f"{HASH_SALT}{value}".encode('utf-8')
-    return hashlib.sha256(salted).hexdigest()[:16]
+def hash_password(password: str) -> str:
+    """Hash password for safe logging (first 16 chars of SHA256)"""
+    # Limit password length before hashing to prevent DoS
+    safe_password = password[:MAX_PASSWORD_LENGTH] if password else ""
+    return hashlib.sha256(safe_password.encode()).hexdigest()[:16]
 
 
 class HoneypotServer(asyncssh.SSHServer):
     def __init__(self):
         self.client_ip = None
+        self.client_ip_valid = False
+        self._rate_limited = False
         print(f"[DEBUG] HoneypotServer instance created", flush=True)
         
     def connection_made(self, conn):
         try:
             peername = conn.get_extra_info('peername')
-            self.client_ip = peername[0] if peername else 'unknown'
+            raw_ip = peername[0] if peername else 'unknown'
+            
+            # Validate IP address
+            self.client_ip, self.client_ip_valid = validate_ip(raw_ip)
+            
+            # Check connection rate limit
+            allowed, reason = rate_limiter.check_connection(self.client_ip)
+            if not allowed:
+                self._rate_limited = True
+                rate_limiter.log_blocked('connection', self.client_ip,
+                    len(rate_limiter._conn_counts.get(self.client_ip, [])),
+                    rate_limiter.conn_per_min, '1m')
+                print(f"[RATELIMIT] Connection blocked from {self.client_ip}: {reason}", flush=True)
+                conn.close()
+                return
+            
             print(f"[DEBUG] Connection from {self.client_ip}", flush=True)
-            log_event('connection', {'ip': self.client_ip})
+            log_event('connection', {
+                'ip': self.client_ip,
+                'ip_valid': self.client_ip_valid
+            })
         except Exception as e:
             print(f"[ERROR] connection_made: {e}", flush=True)
             traceback.print_exc()
 
     def connection_lost(self, exc):
         print(f"[DEBUG] Connection lost from {self.client_ip}: {exc}", flush=True)
-        log_event('disconnect', {'ip': self.client_ip, 'error': str(exc) if exc else None})
+        # Sanitize exception message
+        error_msg = sanitize_for_log(str(exc), max_length=256) if exc else None
+        log_event('disconnect', {'ip': self.client_ip, 'error': error_msg})
 
     def begin_auth(self, username):
-        print(f"[DEBUG] Auth attempt for user: {username}", flush=True)
+        # Validate username immediately
+        safe_username, is_valid = validate_username(username)
+        print(f"[DEBUG] Auth attempt for user: {safe_username} (valid={is_valid})", flush=True)
         return True
 
     def password_auth_supported(self):
         return True
 
     def validate_password(self, username, password):
-        # Hash password with salt for safe logging
-        pw_hash = hash_credential(password) if password else "empty"
-        print(f"[DEBUG] Password attempt: {username}:***", flush=True)
+        # Check auth rate limit
+        allowed, reason = rate_limiter.check_auth(self.client_ip)
+        if not allowed:
+            rate_limiter.log_blocked('auth', self.client_ip,
+                len(rate_limiter._auth_counts.get(self.client_ip, [])),
+                rate_limiter.auth_per_hour, '1h')
+            print(f"[RATELIMIT] Auth blocked from {self.client_ip}: {reason}", flush=True)
+            return False
+        
+        # Validate and sanitize username
+        safe_username, username_valid = validate_username(username)
+        
+        # Validate password length (don't log content)
+        pw_length, pw_valid = validate_password(password)
+        
+        # Hash password for safe logging
+        pw_hash = hash_password(password) if password else "empty"
+        
+        print(f"[DEBUG] Password attempt: {safe_username}:***", flush=True)
         log_event('login_attempt', {
             'ip': self.client_ip,
-            'username': username,
+            'username': safe_username,
+            'username_valid': username_valid,
             'password_hash': pw_hash,
-            'password_length': len(password) if password else 0
+            'password_length': pw_length,
+            'password_valid': pw_valid,
+            'suspicious': not username_valid or not pw_valid
         })
         return False
 
@@ -94,24 +231,55 @@ class HoneypotServer(asyncssh.SSHServer):
         return True
 
     def validate_public_key(self, username, key):
-        print(f"[DEBUG] Pubkey attempt: {username}", flush=True)
+        # Check auth rate limit
+        allowed, reason = rate_limiter.check_auth(self.client_ip)
+        if not allowed:
+            rate_limiter.log_blocked('auth', self.client_ip,
+                len(rate_limiter._auth_counts.get(self.client_ip, [])),
+                rate_limiter.auth_per_hour, '1h')
+            print(f"[RATELIMIT] Auth blocked from {self.client_ip}: {reason}", flush=True)
+            return False
+        
+        # Validate username
+        safe_username, username_valid = validate_username(username)
+        
+        # Validate key algorithm and fingerprint
+        try:
+            key_type = sanitize_for_log(key.get_algorithm(), max_length=64)
+            fingerprint = validate_ssh_fingerprint(key.get_fingerprint())
+        except Exception as e:
+            key_type = "<error>"
+            fingerprint = "<error>"
+        
+        print(f"[DEBUG] Pubkey attempt: {safe_username}", flush=True)
         log_event('pubkey_attempt', {
             'ip': self.client_ip,
-            'username': username,
-            'key_type': key.get_algorithm(),
-            'fingerprint': key.get_fingerprint()
+            'username': safe_username,
+            'username_valid': username_valid,
+            'key_type': key_type,
+            'fingerprint': fingerprint
         })
         return False
 
 
 def log_event(event_type, data):
     """Log event to file and stdout"""
+    # Sanitize event type
+    safe_event_type = sanitize_for_log(event_type, max_length=64)
+    
     event = {
         'timestamp': datetime.utcnow().isoformat() + 'Z',
-        'event': event_type,
+        'event': safe_event_type,
         **data
     }
+    
+    # Ensure total log line doesn't exceed limits
     line = json.dumps(event)
+    if len(line) > 16384:  # MAX_LOG_LINE_LENGTH
+        event['_truncated'] = True
+        event['_original_length'] = len(line)
+        line = json.dumps(event)[:16384]
+    
     print(line, flush=True)
     
     try:
@@ -130,7 +298,13 @@ async def start_server():
         key = asyncssh.generate_private_key('ssh-rsa', 2048)
         print("[DEBUG] Host key generated", flush=True)
         
-        log_event('startup', {'port': PORT, 'version': '1.1.1'})
+        log_event('startup', {
+            'port': PORT, 
+            'version': '1.3.0',
+            'rate_limiting': rate_limiter.enabled,
+            'conn_limit': f'{rate_limiter.conn_per_min}/min',
+            'auth_limit': f'{rate_limiter.auth_per_hour}/hr'
+        })
         
         print(f"[DEBUG] Starting SSH server on 0.0.0.0:{PORT}...", flush=True)
         server = await asyncssh.create_server(
@@ -144,6 +318,7 @@ async def start_server():
         # Wait for shutdown signal
         await shutdown_event.wait()
         print("[INFO] Shutting down gracefully...", flush=True)
+        rate_limiter.shutdown()
         server.close()
         await server.wait_closed()
         log_event('shutdown', {'reason': 'signal'})
