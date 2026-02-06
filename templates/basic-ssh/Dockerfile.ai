@@ -1,0 +1,26 @@
+# AI-Enhanced SSH Honeypot
+FROM python:3.11-slim
+
+# Install dependencies
+RUN pip install --no-cache-dir asyncssh cryptography httpx
+
+# Create app structure
+RUN mkdir -p /app /common /src/ai /var/log/honeypot
+
+# Copy application files
+COPY honeypot_ai.py /app/honeypot.py
+COPY test_tcp.py /app/test_tcp.py
+COPY common/ /common/
+
+# Copy AI module
+COPY ../../src/ai/ /src/ai/
+
+# Default port - override with PORT env var
+EXPOSE 8022
+
+# Environment defaults
+ENV AI_DECEPTION_ENABLED=false
+ENV AI_DECEPTION_PERSONALITY=naive_intern
+
+# Run the honeypot
+CMD ["python", "-u", "/app/honeypot.py"]
