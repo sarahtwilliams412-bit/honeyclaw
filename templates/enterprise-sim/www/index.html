@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Acme Corporation - Intranet</title>
+    <style>
+        body { font-family: 'Segoe UI', Arial, sans-serif; margin: 0; background: #f0f0f0; }
+        .header { background: #0078d4; color: white; padding: 20px; }
+        .header h1 { margin: 0; }
+        .nav { background: #106ebe; padding: 10px 20px; }
+        .nav a { color: white; text-decoration: none; margin-right: 20px; }
+        .content { padding: 20px; max-width: 1200px; margin: 0 auto; }
+        .card { background: white; padding: 20px; margin: 10px 0; border-radius: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .quick-links { display: flex; gap: 20px; flex-wrap: wrap; }
+        .quick-link { background: white; padding: 30px; text-align: center; border-radius: 4px; flex: 1; min-width: 200px; text-decoration: none; color: #333; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .quick-link:hover { background: #f5f5f5; }
+        .quick-link .icon { font-size: 48px; margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🏢 Acme Corporation</h1>
+        <p>Employee Intranet Portal</p>
+    </div>
+    <div class="nav">
+        <a href="/">Home</a>
+        <a href="/owa">Email</a>
+        <a href="/sharepoint">SharePoint</a>
+        <a href="/hr">HR Portal</a>
+        <a href="/it">IT Support</a>
+    </div>
+    <div class="content">
+        <div class="card">
+            <h2>Welcome to the Acme Intranet</h2>
+            <p>Your gateway to company resources and information.</p>
+        </div>
+        
+        <h3>Quick Links</h3>
+        <div class="quick-links">
+            <a href="/owa" class="quick-link">
+                <div class="icon">📧</div>
+                <div>Outlook Web Access</div>
+            </a>
+            <a href="/sharepoint" class="quick-link">
+                <div class="icon">📁</div>
+                <div>SharePoint</div>
+            </a>
+            <a href="/teams" class="quick-link">
+                <div class="icon">💬</div>
+                <div>Microsoft Teams</div>
+            </a>
+            <a href="/hr" class="quick-link">
+                <div class="icon">👥</div>
+                <div>HR Portal</div>
+            </a>
+        </div>
+        
+        <div class="card">
+            <h3>📢 Announcements</h3>
+            <ul>
+                <li><strong>Feb 5:</strong> Q4 All-Hands meeting at 3pm in Main Conference Room</li>
+                <li><strong>Feb 3:</strong> IT Maintenance scheduled for Saturday 2am-6am</li>
+                <li><strong>Jan 28:</strong> New VPN client available - contact IT for upgrade</li>
+            </ul>
+        </div>
+    </div>
+</body>
+</html>

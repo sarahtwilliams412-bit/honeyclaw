@@ -1,0 +1,124 @@
+# Honey Claw - Fake API Honeypot Template
+# Medium-interaction REST API honeypot
+
+name: fake-api
+version: 1.0.0
+interaction_level: medium
+description: |
+  Simulates a REST API with common endpoints to detect API abuse,
+  token theft, and injection attempts.
+
+default_port: 8080
+internal_port: 8080
+protocol: http
+
+resources:
+  memory: 128m
+  cpu: 0.2
+  pids: 30
+
+capabilities:
+  - token_capture
+  - injection_detection
+  - request_logging
+  - rate_limit_simulation
+  - fake_data_responses
+
+settings:
+  server:
+    name: "nginx/1.24.0"
+    framework: "Express"
+    
+  # API configuration
+  api:
+    base_path: /api/v1
+    auth_header: "Authorization"
+    api_key_header: "X-API-Key"
+    
+  # Simulated endpoints
+  endpoints:
+    - path: /api/v1/users
+      methods: [GET, POST]
+      auth_required: true
+      description: "User management"
+      
+    - path: /api/v1/users/{id}
+      methods: [GET, PUT, DELETE]
+      auth_required: true
+      description: "User by ID"
+      
+    - path: /api/v1/auth/login
+      methods: [POST]
+      auth_required: false
+      description: "Authentication"
+      
+    - path: /api/v1/auth/token
+      methods: [POST]
+      auth_required: false
+      description: "Token refresh"
+      
+    - path: /api/v1/admin/config
+      methods: [GET, PUT]
+      auth_required: true
+      description: "Admin configuration (decoy)"
+      
+    - path: /api/v1/internal/debug
+      methods: [GET]
+      auth_required: false
+      description: "Debug endpoint (decoy)"
+      
+    - path: /health
+      methods: [GET]
+      auth_required: false
+      description: "Health check"
+      
+    - path: /.well-known/openapi.json
+      methods: [GET]
+      auth_required: false
+      description: "OpenAPI spec"
+
+  # Response simulation
+  responses:
+    delay_ms: 50-200  # Random delay range
+    error_rate: 0.05  # 5% simulated errors
+    
+  # Detection rules
+  detection:
+    sql_injection: true
+    xss: true
+    path_traversal: true
+    command_injection: true
+    xxe: true
+
+logging:
+  format: json
+  include:
+    - timestamp
+    - source_ip
+    - method
+    - path
+    - query_params
+    - headers
+    - body
+    - auth_token
+    - user_agent
+    - response_code
+    
+  # MITRE ATT&CK mapping
+  mitre:
+    tactics:
+      - TA0001  # Initial Access
+      - TA0006  # Credential Access
+      - TA0009  # Collection
+    techniques:
+      - T1190   # Exploit Public-Facing Application
+      - T1552   # Unsecured Credentials
+      - T1539   # Steal Web Session Cookie
+
+alerts:
+  # SQLi/XSS attempt
+  on_injection: true
+  # Admin endpoint access
+  on_admin_access: true
+  # Rapid enumeration
+  requests_per_minute: 60

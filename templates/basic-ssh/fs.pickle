@@ -1,0 +1,3 @@
+# Placeholder for Cowrie filesystem pickle
+# In production, generate with: bin/createfs
+# This file simulates a Linux filesystem for the honeypot

@@ -1,0 +1,175 @@
+# Honey Claw - Enterprise Simulation Honeypot Template
+# High-interaction enterprise environment simulation
+
+name: enterprise-sim
+version: 1.0.0
+interaction_level: high
+description: |
+  Full enterprise environment simulation including multiple services,
+  fake Active Directory, file shares, and lateral movement detection.
+  Designed for APT detection and advanced threat hunting.
+
+default_ports:
+  - 22    # SSH
+  - 80    # HTTP
+  - 443   # HTTPS
+  - 3389  # RDP
+  - 5985  # WinRM
+  - 445   # SMB
+  - 389   # LDAP
+
+protocol: multi
+
+resources:
+  memory: 512m
+  cpu: 0.5
+  pids: 100
+
+capabilities:
+  - multi_service
+  - active_directory_sim
+  - file_share_sim
+  - session_recording
+  - lateral_movement_detection
+  - credential_harvesting
+  - malware_capture
+  - command_logging
+
+settings:
+  # Simulated organization
+  organization:
+    name: "Acme Corporation"
+    domain: "acme.local"
+    netbios: "ACME"
+    
+  # Active Directory simulation
+  active_directory:
+    enabled: true
+    domain_controllers:
+      - name: "DC01"
+        ip: "10.0.0.10"
+    users:
+      - username: "administrator"
+        display_name: "Domain Admin"
+        groups: ["Domain Admins", "Enterprise Admins"]
+      - username: "svc_backup"
+        display_name: "Backup Service"
+        groups: ["Backup Operators"]
+      - username: "jsmith"
+        display_name: "John Smith"
+        groups: ["Domain Users", "IT Support"]
+        
+  # SSH configuration
+  ssh:
+    enabled: true
+    port: 22
+    banner: "SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.1"
+    
+  # HTTP/HTTPS services
+  http:
+    enabled: true
+    ports: [80, 443]
+    services:
+      - path: /
+        type: intranet
+        title: "Acme Intranet Portal"
+      - path: /owa
+        type: outlook_web
+        title: "Outlook Web Access"
+      - path: /admin
+        type: admin_panel
+        title: "IT Admin Console"
+        
+  # RDP simulation
+  rdp:
+    enabled: true
+    port: 3389
+    nla_enabled: true
+    
+  # WinRM simulation
+  winrm:
+    enabled: true
+    port: 5985
+    
+  # SMB file shares
+  smb:
+    enabled: true
+    port: 445
+    shares:
+      - name: "NETLOGON"
+        path: "/shares/netlogon"
+      - name: "SYSVOL"
+        path: "/shares/sysvol"
+      - name: "IT-Share"
+        path: "/shares/it"
+        files:
+          - "passwords.xlsx"      # Decoy
+          - "network-diagram.pdf"
+          - "vpn-config.ovpn"
+      - name: "Finance"
+        path: "/shares/finance"
+        files:
+          - "Q4-2025-Report.xlsx"
+          - "budgets/"
+          
+  # Fake sensitive files (canary tokens)
+  canary_files:
+    - path: "/shares/it/passwords.xlsx"
+      type: excel
+      content: "fake_credentials"
+    - path: "/home/admin/.ssh/id_rsa"
+      type: ssh_key
+      content: "fake_private_key"
+    - path: "/shares/it/vpn-config.ovpn"
+      type: openvpn
+      content: "fake_vpn_config"
+
+logging:
+  format: json
+  session_recording: true
+  pcap_capture: false  # Resource intensive
+  
+  include:
+    - all_network_connections
+    - authentication_attempts  
+    - command_execution
+    - file_access
+    - process_creation
+    - registry_access
+    - lateral_movement
+    
+  # MITRE ATT&CK mapping
+  mitre:
+    tactics:
+      - TA0001  # Initial Access
+      - TA0002  # Execution
+      - TA0003  # Persistence
+      - TA0004  # Privilege Escalation
+      - TA0005  # Defense Evasion
+      - TA0006  # Credential Access
+      - TA0007  # Discovery
+      - TA0008  # Lateral Movement
+      - TA0009  # Collection
+      - TA0010  # Exfiltration
+      - TA0011  # Command and Control
+    techniques:
+      - T1021   # Remote Services
+      - T1021.001  # RDP
+      - T1021.002  # SMB
+      - T1021.004  # SSH
+      - T1021.006  # WinRM
+      - T1078   # Valid Accounts
+      - T1087   # Account Discovery
+      - T1135   # Network Share Discovery
+      - T1003   # Credential Dumping
+
+alerts:
+  # High priority alerts
+  on_rdp_success: true
+  on_admin_login: true
+  on_lateral_movement: true
+  on_credential_access: true
+  on_canary_access: true
+  
+  # Rate limiting
+  connections_per_minute: 30

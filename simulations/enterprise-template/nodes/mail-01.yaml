@@ -1,0 +1,177 @@
+# Email Server Honeypot Node
+# Fake Exchange-like mail server
+
+node:
+  id: "mail-01"
+  type: "mail_server"
+  hostname: "mail-01.nexusdynamics.internal"
+  ip: "10.0.10.40"
+  zone: "internal"
+  description: "Corporate email server"
+
+services:
+  - name: "smtp"
+    port: 25
+    protocol: "tcp"
+    banner: "220 mail.nexusdynamics.internal ESMTP Postfix"
+    
+  - name: "submission"
+    port: 587
+    protocol: "tcp"
+    description: "SMTP submission with auth"
+    
+  - name: "imap"
+    port: 143
+    protocol: "tcp"
+    banner: "* OK mail.nexusdynamics.internal IMAP ready"
+    
+  - name: "imaps"
+    port: 993
+    protocol: "tcp"
+    description: "IMAP over SSL"
+    
+  - name: "pop3"
+    port: 110
+    protocol: "tcp"
+    
+  - name: "webmail"
+    port: 443
+    protocol: "https"
+    path: "/owa"
+    description: "Outlook Web Access style interface"
+
+email:
+  domain: "nexusdynamics.com"
+  mx_record: "mail.nexusdynamics.com"
+  
+  mailboxes:
+    - address: "admin@nexusdynamics.com"
+      password: "AdminMail2025!"
+      role: "Administrator"
+      
+    - address: "it-support@nexusdynamics.com"
+      password: "ITsupport99"
+      role: "IT Support"
+      
+    - address: "test@nexusdynamics.com"
+      password: "Test123!"
+      role: "Test Account"
+      
+    - address: "sysadmin@nexusdynamics.com"
+      password: "Cl@w7-Pr0d-K3y"
+      role: "System Admin"
+
+fake_emails:
+  inbox:
+    - from: "devops@nexusdynamics.com"
+      to: "it-support@nexusdynamics.com"
+      subject: "RE: Password reset for CLAW-7 admin"
+      date: "2025-11-14T16:45:00Z"
+      body: |
+        Hey,
+        
+        The new password for the AI assistant admin is:
+        Cl@w7-Pr0d-K3y
+        
+        Don't share this around. Delete this email after you've noted it down.
+        
+        - Jake
+        
+    - from: "hr@nexusdynamics.com"
+      to: "all@nexusdynamics.com"
+      subject: "Welcome New Employees - November 2025"
+      date: "2025-11-01T09:00:00Z"
+      body: |
+        Please join us in welcoming our new team members!
+        
+        - Sarah Chen, Engineering
+        - Mike Rodriguez, Sales
+        - Lisa Park, Marketing
+        
+        Default password for new accounts: NexusNew2025!
+        Please change on first login.
+        
+    - from: "ceo@nexusdynamics.com"
+      to: "executives@nexusdynamics.com"
+      subject: "Q4 Strategy - CONFIDENTIAL"
+      date: "2025-10-28T14:30:00Z"
+      body: |
+        Team,
+        
+        Attached is the Q4 strategy deck. Key points:
+        - Target ARR: $15M
+        - New AI product launch in January
+        - Potential acquisition targets listed in appendix
+        
+        This is board-level confidential. Do not forward.
+        
+        - David
+        
+    - from: "security@nexusdynamics.com"
+      to: "it@nexusdynamics.com"
+      subject: "Suspicious activity detected - AI Assistant API"
+      date: "2025-11-13T22:15:00Z"
+      body: |
+        ALERT: Unusual API calls to ai-assistant-01.nexusdynamics.internal
+        
+        Source IP: External
+        Endpoint: /api/v1/debug
+        Time: 2025-11-13 22:10:00 UTC
+        
+        This endpoint should NOT be publicly accessible.
+        Please investigate immediately.
+        
+        Debug endpoint URL: http://10.0.10.50:8080/api/v1/debug
+
+authentication:
+  methods:
+    - "PLAIN"
+    - "LOGIN"
+    
+  valid_credentials:
+    - username: "test@nexusdynamics.com"
+      password: "Test123!"
+      
+    - username: "it-support@nexusdynamics.com"
+      password: "ITsupport99"
+      
+    - username: "sysadmin@nexusdynamics.com"
+      password: "Cl@w7-Pr0d-K3y"
+
+open_relay:
+  enabled: false
+  log_attempts: true
+
+logging:
+  level: "verbose"
+  capture:
+    - "connections"
+    - "auth_attempts"
+    - "envelope_data"
+    - "email_subjects"
+    - "imap_commands"
+  
+  classify:
+    - pattern: "VRFY|EXPN"
+      tag: "user_enumeration"
+      severity: "medium"
+    - pattern: "password|credential|secret"
+      tag: "password_in_email"
+      severity: "high"
+
+alerts:
+  - event: "successful_login"
+    severity: "high"
+    message: "Email login: {username} from {ip}"
+    
+  - event: "relay_attempt"
+    severity: "medium"
+    message: "Open relay attempt from {ip}"
+    
+  - event: "user_enumeration"
+    severity: "medium"
+    message: "User enumeration attempt from {ip}"
+    
+  - event: "password_email_access"
+    severity: "critical"
+    message: "Email with credentials accessed by {username}"

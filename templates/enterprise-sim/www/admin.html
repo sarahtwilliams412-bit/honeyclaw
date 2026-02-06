@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>IT Admin Console - Acme Corp</title>
+    <style>
+        body { font-family: 'Segoe UI', Arial, sans-serif; margin: 0; background: #1e1e1e; color: #d4d4d4; }
+        .header { background: #c22; color: white; padding: 15px 20px; display: flex; justify-content: space-between; }
+        .header h1 { margin: 0; font-size: 18px; }
+        .warning { background: #ff6b6b; color: white; padding: 10px 20px; font-weight: bold; }
+        .container { display: flex; height: calc(100vh - 100px); }
+        .sidebar { width: 200px; background: #252526; padding: 20px; }
+        .sidebar a { display: block; color: #d4d4d4; text-decoration: none; padding: 10px; margin: 5px 0; border-radius: 4px; }
+        .sidebar a:hover { background: #3c3c3c; }
+        .sidebar a.active { background: #0078d4; }
+        .main { flex: 1; padding: 20px; overflow: auto; }
+        .card { background: #2d2d2d; padding: 20px; margin: 10px 0; border-radius: 4px; }
+        .card h2 { margin-top: 0; color: #0078d4; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { text-align: left; padding: 10px; border-bottom: 1px solid #3c3c3c; }
+        th { color: #888; }
+        .status-ok { color: #4ec9b0; }
+        .status-warn { color: #dcdcaa; }
+        .status-error { color: #f44747; }
+        .login-form { max-width: 400px; margin: 100px auto; }
+        .login-form input { width: 100%; padding: 12px; margin: 8px 0; background: #3c3c3c; border: 1px solid #555; color: #fff; box-sizing: border-box; }
+        .login-form button { width: 100%; padding: 12px; background: #0078d4; border: none; color: white; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🔧 IT Admin Console</h1>
+        <span>ACME-DC01 | admin@acme.local</span>
+    </div>
+    <div class="warning">⚠️ AUTHORIZED PERSONNEL ONLY - All access is logged and monitored</div>
+    
+    <div class="login-form">
+        <div class="card">
+            <h2>Authentication Required</h2>
+            <form action="/api/admin/auth" method="post">
+                <input type="text" name="username" placeholder="Username" required>
+                <input type="password" name="password" placeholder="Password" required>
+                <input type="text" name="otp" placeholder="MFA Code (optional)">
+                <button type="submit">Sign In</button>
+            </form>
+        </div>
+    </div>
+</body>
+</html>

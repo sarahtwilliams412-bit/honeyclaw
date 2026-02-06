@@ -1,0 +1,145 @@
+# MySQL Database Honeypot Node
+# Fake production database with read access
+
+node:
+  id: "db-mysql-01"
+  type: "database"
+  hostname: "db-mysql-01.nexusdynamics.internal"
+  ip: "10.0.10.20"
+  zone: "internal"
+  description: "Primary MySQL database server"
+
+services:
+  - name: "mysql"
+    port: 3306
+    protocol: "tcp"
+    banner: "5.7.38-0ubuntu0.18.04.1"
+
+mysql:
+  version: "5.7.38"
+  
+  databases:
+    - name: "nexus_prod"
+      description: "Main production database"
+      tables:
+        - name: "users"
+          row_count: 487
+          columns: ["id", "email", "password_hash", "role", "created_at"]
+          sample_data:
+            - [1, "admin@nexusdynamics.com", "$2b$12$...", "admin", "2024-01-15"]
+            - [2, "jsmith@nexusdynamics.com", "$2b$12$...", "user", "2024-03-22"]
+            
+        - name: "customers"
+          row_count: 10247
+          columns: ["id", "company", "contact_email", "tier", "mrr"]
+          sample_data:
+            - [1, "Acme Corp", "contact@acme.com", "enterprise", 25000]
+            - [2, "TechStart Inc", "info@techstart.io", "startup", 500]
+            
+        - name: "api_keys"
+          row_count: 156
+          columns: ["id", "user_id", "key_hash", "created_at", "last_used"]
+          
+        - name: "sessions"
+          row_count: 892
+          columns: ["id", "user_id", "token", "expires_at"]
+          
+    - name: "nexus_analytics"
+      description: "Analytics and metrics"
+      tables:
+        - name: "events"
+          row_count: 2847563
+          columns: ["id", "type", "payload", "timestamp"]
+          
+        - name: "metrics"
+          row_count: 15247
+          columns: ["date", "metric", "value"]
+
+authentication:
+  valid_credentials:
+    - username: "readonly"
+      password: "R3adOnly#2025"
+      grants:
+        - "SELECT on nexus_prod.*"
+        - "SELECT on nexus_analytics.*"
+      
+    - username: "nexus_admin"
+      password: "Pr0dDB#Root2025"
+      grants:
+        - "ALL PRIVILEGES on *.*"
+        
+    - username: "svc_backup"
+      password: "B@ckup$erv1ce!"
+      grants:
+        - "SELECT, LOCK TABLES on *.*"
+
+fake_data:
+  employees:
+    count: 487
+    generator: "faker"
+    fields: ["name", "email", "department", "hire_date"]
+    
+  customers:
+    count: 10247
+    generator: "faker"
+    fields: ["company", "contact", "email", "mrr", "tier"]
+    
+  financial:
+    type: "quarterly_reports"
+    years: [2024, 2025]
+    includes_revenue: true
+    realistic: true
+
+honeypot_tables:
+  - name: "admin_passwords"
+    description: "Canary table - any access triggers alert"
+    data:
+      - ["sysadmin", "Cl@w7-Pr0d-K3y", "DO NOT SHARE"]
+      - ["dbadmin", "Pr0dDB#Root2025", "Master password"]
+    alert_on_access: "critical"
+    
+  - name: "credit_cards"
+    description: "Fake CC data - triggers PCI alert"
+    data:
+      - ["4111111111111111", "12/26", "John Doe"]
+    alert_on_access: "critical"
+
+logging:
+  level: "verbose"
+  capture:
+    - "all_connections"
+    - "auth_attempts"
+    - "queries"
+    - "tables_accessed"
+  
+  classify:
+    - pattern: "information_schema|mysql.user"
+      tag: "enumeration"
+      severity: "medium"
+    - pattern: "admin_passwords|credit_cards"
+      tag: "sensitive_table_access"
+      severity: "critical"
+    - pattern: "INTO OUTFILE|LOAD_FILE"
+      tag: "file_access_attempt"
+      severity: "high"
+    - pattern: "UNION.*SELECT|OR.*1=1"
+      tag: "sqli_detected"
+      severity: "high"
+
+alerts:
+  - event: "successful_auth"
+    severity: "high"
+    message: "MySQL login: {username} from {ip}"
+    
+  - event: "admin_login"
+    severity: "critical"
+    message: "Admin account login: {username} from {ip}"
+    
+  - event: "sensitive_table_access"
+    severity: "critical"
+    message: "Honeypot table accessed: {table} by {username}"
+    
+  - event: "data_exfil_attempt"
+    pattern: "SELECT.*INTO OUTFILE"
+    severity: "critical"
+    message: "Data exfiltration attempt by {username}"

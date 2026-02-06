@@ -1,0 +1,165 @@
+# Edge Gateway Honeypot Node
+# Simulates a slightly misconfigured jump server / VPN gateway
+
+node:
+  id: "edge-gw-01"
+  type: "gateway"
+  hostname: "edge-gw-01.nexusdynamics.internal"
+  ip: "10.0.1.10"
+  zone: "edge"
+  description: "VPN gateway and jump server"
+
+services:
+  - name: "ssh"
+    port: 22
+    protocol: "tcp"
+    banner: |
+      SSH-2.0-OpenSSH_8.2p1 Ubuntu-4ubuntu0.5
+      
+      =============================================
+       Nexus Dynamics Inc. - Gateway Server
+       Authorized personnel only!
+       
+       For VPN access issues, contact IT support
+       Test account: vpn_test / VPNtest2025
+       (Remove this before prod deployment!)
+      =============================================
+    
+  - name: "rdp"
+    port: 3389
+    protocol: "tcp"
+    description: "RDP Gateway"
+    banner: "Nexus Dynamics Remote Desktop Gateway"
+    
+  - name: "openvpn"
+    port: 1194
+    protocol: "udp"
+    description: "OpenVPN server"
+
+ssh:
+  version: "OpenSSH_8.2p1"
+  allow_password_auth: true
+  
+  motd: |
+    Welcome to Nexus Dynamics Gateway Server
+    =========================================
+    
+    Last login: Thu Nov 14 09:32:15 2025 from 192.168.1.100
+    
+    NOTICE: All sessions are logged for security purposes.
+    
+    Available jump targets:
+      - web-prod-01 (10.0.2.10)
+      - db-mysql-01 (10.0.10.20)
+      - files-internal-01 (10.0.10.30)
+      - mail-01 (10.0.10.40)
+      - ai-assistant-01 (10.0.10.50)
+    
+    Use: ssh <target> to connect
+    
+  fake_commands:
+    ls:
+      output: |
+        Desktop    Documents  Downloads  vpn-configs
+        .bash_history  .ssh  .profile
+        
+    "cat .bash_history":
+      output: |
+        ssh db-mysql-01
+        mysql -u readonly -p
+        ssh files-internal-01
+        smbclient //files/shared -U fileuser
+        cat /etc/openvpn/client.conf
+        
+    "cat /etc/passwd":
+      output: |
+        root:x:0:0:root:/root:/bin/bash
+        sysadmin:x:1000:1000:System Admin:/home/sysadmin:/bin/bash
+        vpn_test:x:1001:1001:VPN Test Account:/home/vpn_test:/bin/bash
+        deploy:x:1002:1002:Deployment Service:/home/deploy:/bin/bash
+        svc_backup:x:1003:1003:Backup Service:/home/svc_backup:/bin/bash
+        
+    "ls .ssh":
+      output: |
+        authorized_keys  id_rsa  id_rsa.pub  known_hosts
+        
+    "cat .ssh/id_rsa":
+      log_severity: "critical"
+      output: |
+        -----BEGIN OPENSSH PRIVATE KEY-----
+        b3BlbnNzaC1rZXktdjEAAAAA... [truncated - this would be a fake key]
+        -----END OPENSSH PRIVATE KEY-----
+        
+    "ls vpn-configs":
+      output: |
+        nexus-vpn.ovpn  client.conf  ca.crt  client.key
+        
+    "cat vpn-configs/nexus-vpn.ovpn":
+      output: |
+        client
+        dev tun
+        proto udp
+        remote vpn.nexusdynamics.com 1194
+        resolv-retry infinite
+        nobind
+        persist-key
+        persist-tun
+        ca ca.crt
+        cert client.crt
+        key client.key
+        # Test credentials embedded (REMOVE!)
+        auth-user-pass
+        # vpn_test / VPNtest2025
+
+authentication:
+  methods:
+    - password
+    
+  valid_credentials:
+    - username: "vpn_test"
+      password: "VPNtest2025"
+      shell: "/bin/bash"
+      home: "/home/vpn_test"
+      
+    - username: "sysadmin"
+      password: "Cl@w7-Pr0d-K3y"
+      shell: "/bin/bash"
+      home: "/home/sysadmin"
+      
+    - username: "deploy"
+      key_only: true
+      authorized_key: "ssh-rsa AAAAB3... deploy@nexusdynamics"
+
+logging:
+  level: "verbose"
+  capture:
+    - "all_connections"
+    - "auth_attempts"
+    - "commands"
+    - "key_exchanges"
+  
+  classify:
+    - pattern: "hydra|medusa|ncrack"
+      tag: "brute_force_tool"
+      severity: "high"
+    - pattern: "cat.*id_rsa|cat.*key"
+      tag: "key_theft_attempt"
+      severity: "critical"
+    - pattern: "sudo|su -|passwd"
+      tag: "privilege_escalation"
+      severity: "high"
+
+alerts:
+  - event: "successful_login"
+    severity: "high"
+    message: "SSH login successful: {username} from {ip}"
+    
+  - event: "brute_force_detected"
+    severity: "high"
+    threshold: 5
+    window_seconds: 60
+    message: "Brute force attack detected from {ip}"
+    
+  - event: "key_access"
+    severity: "critical"
+    message: "SSH private key accessed by {username}"

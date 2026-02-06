@@ -1,0 +1,20 @@
+{
+  "name": "honeyclaw-bot",
+  "version": "0.1.0",
+  "description": "Telegram bot interface for Honey Claw honeypot service",
+  "main": "handler.js",
+  "scripts": {
+    "start": "node handler.js",
+    "dev": "node --watch handler.js"
+  },
+  "dependencies": {
+    "grammy": "^1.21.1"
+  },
+  "devDependencies": {},
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": ["telegram", "bot", "honeypot", "security"],
+  "author": "Honey Claw",
+  "license": "MIT"
+}

@@ -1,0 +1,150 @@
+# Network Topology Configuration
+# Enterprise Honeypot Simulation
+
+topology:
+  type: "three-tier"
+  description: "Simulated enterprise network with edge, DMZ, and internal zones"
+
+# Zone definitions with realistic corporate naming
+zones:
+  edge:
+    name: "Edge Network"
+    cidr: "10.0.1.0/24"
+    gateway: "10.0.1.1"
+    vlan: 100
+    description: "Internet-facing gateway services"
+    firewall_rules:
+      inbound:
+        - { port: 22, proto: "tcp", source: "any", description: "SSH" }
+        - { port: 443, proto: "tcp", source: "any", description: "HTTPS VPN" }
+        - { port: 3389, proto: "tcp", source: "any", description: "RDP Gateway" }
+      outbound:
+        - { port: "any", proto: "any", dest: "dmz", description: "To DMZ" }
+        
+  dmz:
+    name: "DMZ"
+    cidr: "10.0.2.0/24"
+    gateway: "10.0.2.1"
+    vlan: 200
+    description: "Public-facing web applications"
+    firewall_rules:
+      inbound:
+        - { port: 80, proto: "tcp", source: "edge", description: "HTTP" }
+        - { port: 443, proto: "tcp", source: "edge", description: "HTTPS" }
+      outbound:
+        - { port: 3306, proto: "tcp", dest: "internal", description: "MySQL" }
+        - { port: 6379, proto: "tcp", dest: "internal", description: "Redis" }
+        
+  internal:
+    name: "Internal Network"
+    cidr: "10.0.10.0/24"
+    gateway: "10.0.10.1"
+    vlan: 300
+    description: "Internal services and applications"
+    firewall_rules:
+      inbound:
+        - { port: "any", proto: "any", source: "dmz", description: "From DMZ" }
+        - { port: "any", proto: "any", source: "management", description: "From Mgmt" }
+      outbound:
+        - { port: "any", proto: "any", dest: "any", description: "Unrestricted" }
+        
+  management:
+    name: "Management Network"
+    cidr: "10.0.100.0/24"
+    gateway: "10.0.100.1"
+    vlan: 999
+    description: "Administration and monitoring (Honey Claw control plane)"
+    firewall_rules:
+      inbound:
+        - { port: "any", proto: "any", source: "honeyclaw", description: "Control plane" }
+      outbound:
+        - { port: "any", proto: "any", dest: "any", description: "Full access" }
+
+# Node IP assignments
+nodes:
+  # Edge Zone
+  edge-gw-01:
+    zone: "edge"
+    ip: "10.0.1.10"
+    mac: "02:00:00:01:01:10"
+    hostname: "edge-gw-01.nexusdynamics.internal"
+    dns_aliases:
+      - "vpn.nexusdynamics.com"
+      - "gateway.nexusdynamics.internal"
+      
+  # DMZ Zone  
+  web-prod-01:
+    zone: "dmz"
+    ip: "10.0.2.10"
+    mac: "02:00:00:02:01:10"
+    hostname: "web-prod-01.nexusdynamics.internal"
+    dns_aliases:
+      - "www.nexusdynamics.com"
+      - "intranet.nexusdynamics.internal"
+      - "portal.nexusdynamics.internal"
+      
+  # Internal Zone
+  db-mysql-01:
+    zone: "internal"
+    ip: "10.0.10.20"
+    mac: "02:00:00:0a:01:20"
+    hostname: "db-mysql-01.nexusdynamics.internal"
+    dns_aliases:
+      - "mysql.nexusdynamics.internal"
+      - "db.nexusdynamics.internal"
+      
+  files-internal-01:
+    zone: "internal"
+    ip: "10.0.10.30"
+    mac: "02:00:00:0a:01:30"
+    hostname: "files-internal-01.nexusdynamics.internal"
+    dns_aliases:
+      - "files.nexusdynamics.internal"
+      - "sharepoint.nexusdynamics.internal"
+      
+  mail-01:
+    zone: "internal"
+    ip: "10.0.10.40"
+    mac: "02:00:00:0a:01:40"
+    hostname: "mail-01.nexusdynamics.internal"
+    dns_aliases:
+      - "mail.nexusdynamics.internal"
+      - "smtp.nexusdynamics.internal"
+      - "exchange.nexusdynamics.internal"
+      
+  ai-assistant-01:
+    zone: "internal"
+    ip: "10.0.10.50"
+    mac: "02:00:00:0a:01:50"
+    hostname: "ai-assistant-01.nexusdynamics.internal"
+    dns_aliases:
+      - "claw.nexusdynamics.internal"
+      - "assistant.nexusdynamics.internal"
+
+# DNS configuration
+dns:
+  internal_domain: "nexusdynamics.internal"
+  external_domain: "nexusdynamics.com"
+  nameservers:
+    - "10.0.10.1"  # Internal DNS (honeypot controlled)
+  
+  # Fake DNS records for realism
+  records:
+    - { type: "A", name: "dc01", ip: "10.0.10.5" }
+    - { type: "A", name: "backup", ip: "10.0.10.100" }
+    - { type: "A", name: "monitoring", ip: "10.0.100.10" }
+    - { type: "MX", name: "@", value: "mail.nexusdynamics.internal", priority: 10 }
+    - { type: "TXT", name: "@", value: "v=spf1 include:nexusdynamics.com ~all" }
+
+# Network services
+services:
+  dhcp:
+    enabled: false  # Static IPs for honeypots
+    
+  ntp:
+    server: "10.0.100.1"
+    
+  syslog:
+    server: "10.0.100.5"
+    port: 514
+    protocol: "udp"

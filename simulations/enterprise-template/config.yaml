@@ -1,0 +1,138 @@
+# Enterprise Honeypot Simulation - Main Configuration
+# Template Version: 1.0.0
+
+simulation:
+  name: "Nexus Dynamics Enterprise Honeypot"
+  id: "nexus-ent-sim-001"
+  version: "1.0.0"
+  created: "2026-02-05"
+  expires_hours: 72
+  auto_reset_minutes: 60
+
+company:
+  name: "Nexus Dynamics Inc."
+  domain: "nexusdynamics.internal"
+  external_domain: "nexusdynamics.com"
+  industry: "Enterprise Software"
+  employees: 487
+  founded: 2015
+  headquarters: "San Francisco, CA"
+  description: "AI-powered business intelligence solutions"
+
+branding:
+  logo: "assets/nexus-logo.svg"
+  favicon: "assets/favicon.ico"
+  colors:
+    primary: "#2563eb"
+    secondary: "#1e40af"
+    accent: "#60a5fa"
+  tagline: "Intelligence That Works"
+
+network:
+  topology: "three-tier"
+  isolation: "full"
+  external_gateway: "10.0.0.1"
+  
+  zones:
+    edge:
+      cidr: "10.0.1.0/24"
+      description: "Internet-facing services"
+    dmz:
+      cidr: "10.0.2.0/24" 
+      description: "Public-facing applications"
+    internal:
+      cidr: "10.0.10.0/24"
+      description: "Internal services"
+    management:
+      cidr: "10.0.100.0/24"
+      description: "Admin and monitoring"
+
+nodes:
+  - id: "edge-gw-01"
+    zone: "edge"
+    ip: "10.0.1.10"
+    config: "nodes/edge-gw-01.yaml"
+    
+  - id: "web-prod-01"
+    zone: "dmz"
+    ip: "10.0.2.10"
+    config: "nodes/web-prod-01.yaml"
+    
+  - id: "db-mysql-01"
+    zone: "internal"
+    ip: "10.0.10.20"
+    config: "nodes/db-mysql-01.yaml"
+    
+  - id: "files-internal-01"
+    zone: "internal"
+    ip: "10.0.10.30"
+    config: "nodes/files-internal-01.yaml"
+    
+  - id: "mail-01"
+    zone: "internal"
+    ip: "10.0.10.40"
+    config: "nodes/mail-01.yaml"
+    
+  - id: "ai-assistant-01"
+    zone: "internal"
+    ip: "10.0.10.50"
+    config: "nodes/ai-assistant-01.yaml"
+
+logging:
+  level: "verbose"
+  destinations:
+    - type: "file"
+      path: "logs/"
+      rotation: "hourly"
+    - type: "siem"
+      endpoint: "${SIEM_ENDPOINT}"
+      format: "syslog"
+    - type: "honeyclaw"
+      api_key: "${HONEYCLAW_API_KEY}"
+  
+  capture:
+    network: true
+    application: true
+    authentication: true
+    file_access: true
+    commands: true
+
+threat_intel:
+  enabled: true
+  mitre_mapping: true
+  ioc_extraction: true
+  export_formats:
+    - "json"
+    - "stix2.1"
+    - "markdown"
+  auto_report_interval_minutes: 15
+
+alerting:
+  enabled: true
+  channels:
+    - type: "webhook"
+      url: "${ALERT_WEBHOOK_URL}"
+      events: ["critical", "high"]
+    - type: "email"
+      address: "${ALERT_EMAIL}"
+      events: ["critical"]
+
+resources:
+  per_node:
+    cpu: "0.5"
+    memory: "512Mi"
+    disk: "1Gi"
+  total:
+    cpu: "4"
+    memory: "4Gi"
+    disk: "10Gi"
+
+safety:
+  kill_switch: true
+  rate_limiting:
+    requests_per_minute: 1000
+    connections_per_ip: 50
+  auto_block:
+    enabled: true
+    threshold_requests: 10000
+    duration_minutes: 60

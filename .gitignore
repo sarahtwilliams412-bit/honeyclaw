@@ -1,0 +1,49 @@
+# Logs
+logs/
+*.log
+*.json.log
+
+# Environment
+.env
+.env.local
+*.env
+
+# Secrets
+secrets/
+*.pem
+*.key
+id_rsa*
+
+# Docker
+.docker/
+
+# Node modules (for fake-api)
+node_modules/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+venv/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Test data
+test-logs/
+*.pcap

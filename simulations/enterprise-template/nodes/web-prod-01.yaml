@@ -1,0 +1,213 @@
+# Web Server Honeypot Node
+# Corporate intranet with "accidental" exposures
+
+node:
+  id: "web-prod-01"
+  type: "web_server"
+  hostname: "web-prod-01.nexusdynamics.internal"
+  ip: "10.0.2.10"
+  zone: "dmz"
+  description: "Corporate intranet and portal"
+
+services:
+  - name: "http"
+    port: 80
+    protocol: "http"
+    redirect_to: 443
+    
+  - name: "https"
+    port: 443
+    protocol: "https"
+    certificate: "self-signed"
+
+server:
+  type: "apache"
+  version: "2.4.52"  # Slightly outdated
+  os_banner: "Ubuntu"
+  
+  headers:
+    Server: "Apache/2.4.52 (Ubuntu)"
+    X-Powered-By: "PHP/8.1.0"
+
+pages:
+  # Public pages
+  - path: "/"
+    title: "Nexus Dynamics - Employee Portal"
+    content: "login_form"
+    comments:
+      - "TODO: Remove before launch"
+      - "Test account: guest/guest123"
+      
+  - path: "/login"
+    method: ["GET", "POST"]
+    title: "Login - Nexus Dynamics"
+    accepts_credentials: true
+    
+  - path: "/about"
+    title: "About Nexus Dynamics"
+    content: "corporate_boilerplate"
+    
+  - path: "/health"
+    content: '{"status": "ok", "version": "3.2.1"}'
+    content_type: "application/json"
+
+  # Hidden/exposed files
+  - path: "/robots.txt"
+    flag: "FLAG{robots_are_not_secrets_a3f8}"
+    content: |
+      # robots.txt for Nexus Dynamics Portal
+      User-agent: *
+      Disallow: /api/v1/debug
+      Disallow: /admin/
+      Disallow: /.env.backup
+      Disallow: /.git/
+      Disallow: /backup/
+      
+      # FLAG{robots_are_not_secrets_a3f8}
+      # Note to self: move this before launch - Jake
+      
+  - path: "/.env.backup"
+    flag: "FLAG{env_files_in_webroot_lol_7d2c}"
+    content: |
+      # Nexus Dynamics - Portal Environment Variables
+      # Last updated: 2025-11-14
+      
+      DATABASE_URL=postgres://portal:P0rt@lDB2025@db.internal:5432/nexus_portal
+      REDIS_URL=redis://cache.internal:6379
+      OPENAI_API_KEY=sk-fake-XXXXXXXXXXXXXXXXXXXXXXXX
+      
+      # Dev credentials (REMOVE BEFORE PROD!!!!)
+      DEV_ADMIN_USER=dev_admin
+      DEV_ADMIN_PASS=NexusDyn2025!tmp
+      
+      # AI Assistant API
+      CLAW_API_URL=http://ai-assistant-01.nexusdynamics.internal:8080
+      CLAW_API_KEY=claw-internal-key-12345
+      
+      # FLAG{env_files_in_webroot_lol_7d2c}
+
+  - path: "/.git/config"
+    content: |
+      [core]
+        repositoryformatversion = 0
+        filemode = true
+        bare = false
+        logallaliases = true
+      [remote "origin"]
+        url = git@github.com:nexusdynamics/portal-internal.git
+        fetch = +refs/heads/*:refs/remotes/origin/*
+      [branch "main"]
+        remote = origin
+        merge = refs/heads/main
+      [user]
+        email = devops@nexusdynamics.com
+
+  - path: "/admin/backup.sql.gz"
+    flag: "FLAG{backup_files_are_treasure_b4c9}"
+    content_type: "application/gzip"
+    description: "Fake database backup with credentials"
+    extracted_content: |
+      -- Nexus Dynamics Database Backup
+      -- Generated: 2025-11-10 03:00:00 UTC
+      
+      -- FLAG{backup_files_are_treasure_b4c9}
+      
+      CREATE TABLE users (
+        id SERIAL PRIMARY KEY,
+        username VARCHAR(50),
+        password_hash VARCHAR(255),
+        role VARCHAR(20)
+      );
+      
+      INSERT INTO users VALUES 
+        (1, 'dev_admin', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/X4.bKZkzO2qVKjTRu', 'developer'),
+        (2, 'sysadmin', '$2b$12$WZK9cb.RtHAA.gQbFR7cKuQXvP4nZKS9H.ypqVKJL.4L.XqYLxDPe', 'admin'),
+        (3, 'guest', '$2b$12$guest.hash.placeholder', 'guest');
+      
+      -- Legacy password for sysadmin (migrated from plaintext):
+      -- Cl@w7-Pr0d-K3y
+
+  - path: "/config.php.bak"
+    content: |
+      <?php
+      // Database configuration - BACKUP
+      define('DB_HOST', 'db-mysql-01.nexusdynamics.internal');
+      define('DB_USER', 'readonly');
+      define('DB_PASS', 'R3adOnly#2025');
+      define('DB_NAME', 'nexus_prod');
+      
+      // Redis cache
+      define('REDIS_HOST', 'cache.internal');
+      define('REDIS_PORT', 6379);
+      
+      // API Keys - DO NOT COMMIT
+      define('STRIPE_KEY', 'sk_live_nexusfake_XXXXXXXXXXXXXXXX');
+      ?>
+
+  - path: "/api/v1/debug"
+    flag: "FLAG{debug_endpoints_in_prod_e5b1}"
+    content_type: "application/json"
+    response:
+      status: "ok"
+      environment: "production"
+      debug_mode: true
+      flag: "FLAG{debug_endpoints_in_prod_e5b1}"
+      php_version: "8.1.0"
+      database_connected: true
+      cache_hit_rate: "87.3%"
+      internal_endpoints:
+        claw_api: "http://10.0.10.50:8080"
+        mysql: "10.0.10.20:3306"
+        smtp: "10.0.10.40:25"
+
+vulnerabilities:
+  simulated:
+    - type: "directory_listing"
+      path: "/backup/"
+      files: ["portal-2025-11-01.tar.gz", "db-2025-11-05.sql"]
+      
+    - type: "git_exposure"
+      path: "/.git/"
+      
+    - type: "backup_files"
+      paths:
+        - "/config.php.bak"
+        - "/.env.backup"
+        - "/admin/backup.sql.gz"
+        
+    - type: "debug_endpoint"
+      path: "/api/v1/debug"
+
+logging:
+  level: "verbose"
+  capture:
+    - "all_requests"
+    - "headers"
+    - "user_agent"
+    - "referer"
+    - "query_params"
+    - "post_body"
+  
+  detect:
+    - pattern: "sqlmap|nikto|burp|dirbuster|gobuster"
+      tag: "scanner_detected"
+      severity: "medium"
+    - pattern: "UNION|SELECT.*FROM|INSERT.*INTO|DROP.*TABLE"
+      tag: "sqli_attempt"
+      severity: "high"
+    - pattern: "<script>|javascript:|onerror="
+      tag: "xss_attempt"
+      severity: "medium"
+
+alerts:
+  - event: "backup_file_access"
+    severity: "high"
+    message: "Backup file downloaded: {path} by {ip}"
+    
+  - event: "git_enumeration"
+    severity: "medium"
+    message: "Git directory enumeration from {ip}"
+    
+  - event: "debug_endpoint_access"
+    severity: "medium"
+    message: "Debug endpoint accessed from {ip}"

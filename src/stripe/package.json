@@ -1,0 +1,12 @@
+{
+  "name": "@honeyclaw/stripe",
+  "version": "0.1.0",
+  "description": "Stripe billing integration for Honey Claw",
+  "main": "index.js",
+  "dependencies": {
+    "stripe": "^14.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,34 @@
+# Honey Claw SSH Configuration
+# Enterprise Simulation Honeypot
+
+Port 22
+ListenAddress 0.0.0.0
+
+# Logging
+SyslogFacility AUTH
+LogLevel VERBOSE
+
+# Authentication
+PermitRootLogin yes
+PasswordAuthentication yes
+PermitEmptyPasswords no
+PubkeyAuthentication yes
+
+# Allow all users (honeypot)
+AllowUsers *
+
+# Session settings
+MaxAuthTries 6
+MaxSessions 10
+LoginGraceTime 120
+
+# Disable forwarding (security)
+AllowTcpForwarding no
+X11Forwarding no
+AllowAgentForwarding no
+
+# Banner
+Banner /etc/ssh/banner
+
+# Subsystems
+Subsystem sftp /usr/lib/openssh/sftp-server

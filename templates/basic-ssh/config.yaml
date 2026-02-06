@@ -1,0 +1,102 @@
+# Honey Claw - Basic SSH Honeypot Template
+# Low-interaction SSH honeypot for credential harvesting
+
+name: basic-ssh
+version: 1.0.0
+interaction_level: low
+description: |
+  Simulates an SSH server to capture brute-force attempts and credential harvesting.
+  Logs all authentication attempts with full metadata.
+
+default_port: 22
+internal_port: 22
+protocol: ssh
+
+resources:
+  memory: 64m
+  cpu: 0.1
+  pids: 20
+
+capabilities:
+  - credential_capture
+  - client_fingerprinting
+  - banner_presentation
+  - session_recording
+
+settings:
+  # SSH server configuration
+  ssh:
+    banner: "SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.1"
+    host_key_type: rsa
+    host_key_bits: 2048
+    
+  # Authentication settings
+  auth:
+    # Accept any credentials (honeypot mode)
+    accept_any: true
+    # Delay between auth attempts (milliseconds) - slows brute force
+    delay_ms: 1000
+    # Max attempts before disconnect
+    max_attempts: 6
+    
+  # Session settings (if auth succeeds)
+  session:
+    enabled: true
+    shell: "/bin/bash"
+    motd: |
+      Welcome to Ubuntu 22.04.3 LTS (GNU/Linux 5.15.0-91-generic x86_64)
+      
+       * Documentation:  https://help.ubuntu.com
+       * Management:     https://landscape.canonical.com
+       * Support:        https://ubuntu.com/advantage
+      
+      Last login: Mon Feb  3 14:22:15 2026 from 10.0.0.1
+    
+    # Fake filesystem for directory listing
+    fake_fs: true
+    
+    # Commands to simulate (others return "command not found")
+    allowed_commands:
+      - ls
+      - pwd
+      - whoami
+      - id
+      - uname
+      - cat
+      - echo
+
+logging:
+  format: json
+  include:
+    - timestamp
+    - source_ip
+    - source_port
+    - username
+    - password
+    - client_version
+    - cipher_suite
+    - session_commands
+    
+  # MITRE ATT&CK mapping
+  mitre:
+    tactics:
+      - TA0001  # Initial Access
+      - TA0006  # Credential Access
+    techniques:
+      - T1078   # Valid Accounts
+      - T1110   # Brute Force
+      - T1110.001  # Password Guessing
+      - T1110.003  # Password Spraying
+
+alerts:
+  # Trigger alert after N attempts from same IP
+  threshold_per_ip: 10
+  # Trigger on successful auth (any creds accepted)
+  on_auth_success: true
+  # Known bad credentials
+  known_bad_passwords:
+    - admin
+    - root
+    - password
+    - 123456
+    - admin123

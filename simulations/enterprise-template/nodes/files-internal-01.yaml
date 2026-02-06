@@ -1,0 +1,175 @@
+# File Server Honeypot Node
+# SMB shares with enticing fake documents
+
+node:
+  id: "files-internal-01"
+  type: "file_server"
+  hostname: "files-internal-01.nexusdynamics.internal"
+  ip: "10.0.10.30"
+  zone: "internal"
+  description: "Internal file shares"
+
+services:
+  - name: "smb"
+    port: 445
+    protocol: "tcp"
+    version: "SMB 3.0"
+    
+  - name: "netbios"
+    port: 139
+    protocol: "tcp"
+    
+  - name: "nfs"
+    port: 2049
+    protocol: "tcp/udp"
+
+shares:
+  - name: "Public"
+    path: "/shares/public"
+    access: "everyone:read"
+    description: "Public documents and policies"
+    contents:
+      - "Employee_Handbook_2025.pdf"
+      - "IT_Acceptable_Use_Policy.pdf"
+      - "Holiday_Calendar_2025.xlsx"
+      
+  - name: "Shared"
+    path: "/shares/shared"
+    access: "domain_users:read"
+    description: "Departmental shared files"
+    contents:
+      - "HR/"
+      - "Finance/"
+      - "IT/"
+      - "Engineering/"
+      - "Marketing/"
+      
+  - name: "IT"
+    path: "/shares/it"
+    access: "it_group:read"
+    description: "IT department files (juicy target)"
+    contents:
+      - "Network_Diagram_2025.vsdx"
+      - "Server_Inventory.xlsx"
+      - "passwords.xlsx"  # Honeypot file!
+      - "Backup_Scripts/"
+      - "VPN_Configs/"
+      
+  - name: "Finance"
+    path: "/shares/finance"
+    access: "finance_group:read"
+    description: "Financial documents"
+    contents:
+      - "Q3_Revenue_Report.xlsx"
+      - "Annual_Budget_2025.xlsx"
+      - "Payroll/"
+      - "Invoices/"
+      
+  - name: "Backup"
+    path: "/shares/backup"
+    access: "svc_backup:full"
+    description: "Backup storage"
+    contents:
+      - "db-mysql-01-20251110.sql.gz"
+      - "web-prod-01-20251110.tar.gz"
+      - "configs-backup-20251110.zip"
+
+honeypot_files:
+  - path: "/shares/it/passwords.xlsx"
+    type: "spreadsheet"
+    description: "Fake password file - high-value target"
+    content:
+      headers: ["System", "Username", "Password", "Notes"]
+      rows:
+        - ["VPN Gateway", "vpn_test", "VPNtest2025", "Test account"]
+        - ["MySQL Prod", "readonly", "R3adOnly#2025", "Analytics access"]
+        - ["AI Assistant", "dev_admin", "NexusDyn2025!tmp", "API access"]
+        - ["Admin Panel", "sysadmin", "Cl@w7-Pr0d-K3y", "MASTER - DO NOT SHARE"]
+    alert_on_access: "critical"
+    
+  - path: "/shares/it/VPN_Configs/client.ovpn"
+    type: "config"
+    content: |
+      client
+      dev tun
+      proto udp
+      remote vpn.nexusdynamics.com 1194
+      # Embedded test credentials
+      # vpn_test / VPNtest2025
+    alert_on_access: "high"
+    
+  - path: "/shares/backup/configs-backup-20251110.zip"
+    type: "archive"
+    contains:
+      - "apache/sites-enabled/portal.conf"
+      - "mysql/my.cnf"
+      - ".env.production"
+    alert_on_access: "high"
+    
+  - path: "/shares/it/SSH_Keys/deploy_key"
+    type: "private_key"
+    description: "SSH key for deployment"
+    alert_on_access: "critical"
+
+authentication:
+  anonymous_access:
+    enabled: true
+    shares: ["Public"]
+    
+  valid_credentials:
+    - username: "fileuser"
+      password: "FileShare99!"
+      groups: ["domain_users"]
+      access:
+        - "Public: read"
+        - "Shared: read"
+        
+    - username: "svc_backup"
+      password: "B@ckup$erv1ce!"
+      groups: ["backup_operators"]
+      access:
+        - "ALL: full"
+        
+    - username: "itadmin"
+      password: "IT@dm1n2025"
+      groups: ["it_group", "domain_admins"]
+      access:
+        - "ALL: full"
+
+logging:
+  level: "verbose"
+  capture:
+    - "connections"
+    - "auth_attempts"
+    - "share_enumeration"
+    - "file_access"
+    - "file_downloads"
+    - "file_searches"
+  
+  classify:
+    - pattern: "passwords|credentials|keys"
+      tag: "credential_hunting"
+      severity: "high"
+    - pattern: "backup|\.sql|\.tar|\.zip"
+      tag: "backup_hunting"
+      severity: "medium"
+    - pattern: "finance|payroll|budget"
+      tag: "financial_access"
+      severity: "medium"
+
+alerts:
+  - event: "share_enumeration"
+    severity: "low"
+    message: "Share enumeration from {ip}"
+    
+  - event: "password_file_access"
+    severity: "critical"
+    message: "Password file accessed: {path} by {username} from {ip}"
+    
+  - event: "backup_download"
+    severity: "high"
+    message: "Backup file downloaded: {path} by {username}"
+    
+  - event: "ssh_key_access"
+    severity: "critical"
+    message: "SSH key accessed: {path} by {username}"

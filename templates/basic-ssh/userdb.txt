@@ -1,0 +1,21 @@
+# Cowrie User Database
+# Format: username:uid:password
+# Use * for any password (honeypot mode)
+
+# Common usernames that attackers try
+root:0:*
+admin:1000:*
+user:1001:*
+ubuntu:1002:*
+test:1003:*
+guest:1004:*
+oracle:1005:*
+postgres:1006:*
+mysql:1007:*
+jenkins:1008:*
+deploy:1009:*
+ansible:1010:*
+vagrant:1011:*
+pi:1012:*
+ec2-user:1013:*
+azureuser:1014:*
