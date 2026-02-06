@@ -136,11 +136,11 @@ const FAKE_FS = {
   '/': ['Documents', 'Downloads', 'Desktop', '.openclaw', '.ssh'],
   '/.openclaw': ['openclaw.json', 'workspace', 'agents'],
   '/.openclaw/openclaw.json': JSON.stringify({
-    gateway: { token: 'CANARY-TOKEN-001' },
-    channels: { discord: { token: 'CANARY-DISCORD-001' }}
+    gateway: { token: generateCanaryToken('gateway') },  // ⚠️ Generate unique per deployment!
+    channels: { discord: { token: generateCanaryToken('discord') }}
   }),
   '/.ssh': ['id_rsa', 'id_rsa.pub', 'known_hosts'],
-  '/.ssh/id_rsa': '-----BEGIN OPENSSH PRIVATE KEY-----\nCANARY-SSH-KEY-001\n...'
+  '/.ssh/id_rsa': generateCanarySSHKey()  // ⚠️ Never hardcode - use generator!
 };
 ```
 
@@ -303,13 +303,17 @@ function generateFingerprint(req) {
 ## Canary Token Examples
 
 ```javascript
-const CANARY_DATA = {
-  // API Keys (will alert if used)
-  apiKeys: {
-    anthropic: 'sk-ant-CANARY-hc001-xxxxxxxx',
-    openai: 'sk-CANARY-hc001-xxxxxxxx',
-    aws: 'AKIAIOSFODNN7CANARY1'
-  },
+// ⚠️ SECURITY: Generate unique canaries per deployment using generateCanaryData()
+// Never commit actual canary values to source control!
+
+function generateCanaryData() {
+  return {
+    // API Keys (will alert if used)
+    apiKeys: {
+      anthropic: `sk-ant-${crypto.randomUUID().slice(0,8)}`,
+      openai: `sk-${crypto.randomUUID().slice(0,8)}`,
+      aws: `AKIA${crypto.randomBytes(16).toString('base64').slice(0,16)}`
+    },
   
   // Fake credentials
   credentials: {

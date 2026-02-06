@@ -4,15 +4,49 @@ Simple SSH Honeypot - Logs all connection attempts
 """
 import asyncio
 import asyncssh
+import hashlib
 import json
 import os
+import signal
 import sys
 import traceback
 from datetime import datetime
 from pathlib import Path
 
-PORT = int(os.environ.get("PORT", 8022))
-LOG_FILE = Path("/var/log/honeypot/ssh.json")
+# Graceful shutdown handling
+shutdown_event = asyncio.Event()
+
+def get_port():
+    """Get port with validation"""
+    try:
+        port = int(os.environ.get("PORT", 8022))
+        if not 1 <= port <= 65535:
+            raise ValueError(f"Port {port} out of range")
+        return port
+    except ValueError as e:
+        print(f"[WARN] Invalid PORT: {e}, using default 8022", flush=True)
+        return 8022
+
+PORT = get_port()
+LOG_FILE = Path(os.environ.get("LOG_PATH", "/var/log/honeypot/ssh.json"))
+HOST_KEY_PATH = Path(os.environ.get("HOST_KEY_PATH", "/data/ssh_host_key"))
+
+def hash_password(password: str) -> str:
+    """Hash password for safe logging (first 16 chars of SHA256)"""
+    return hashlib.sha256(password.encode()).hexdigest()[:16]
+
+def get_or_create_host_key():
+    """Get existing host key or create new one (persisted)"""
+    if HOST_KEY_PATH.exists():
+        print(f"[DEBUG] Loading existing host key from {HOST_KEY_PATH}", flush=True)
+        return asyncssh.read_private_key(str(HOST_KEY_PATH))
+    
+    print(f"[DEBUG] Generating new RSA host key (4096 bit)...", flush=True)
+    HOST_KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    key = asyncssh.generate_private_key('ssh-rsa', 4096)
+    asyncssh.write_private_key(key, str(HOST_KEY_PATH))
+    print(f"[DEBUG] Host key saved to {HOST_KEY_PATH}", flush=True)
+    return key
 
 class HoneypotServer(asyncssh.SSHServer):
     def __init__(self):
@@ -41,11 +75,13 @@ class HoneypotServer(asyncssh.SSHServer):
         return True
 
     def validate_password(self, username, password):
-        print(f"[DEBUG] Password attempt: {username}:{password}", flush=True)
+        # Don't log plaintext password to stdout!
+        print(f"[DEBUG] Password attempt: {username}:***", flush=True)
         log_event('login_attempt', {
             'ip': self.client_ip,
             'username': username,
-            'password': password
+            'password_hash': hash_password(password),
+            'password_length': len(password)
         })
         return False
 
@@ -81,15 +117,25 @@ def log_event(event_type, data):
         print(f"Log write error: {e}", file=sys.stderr)
 
 
+def handle_signal(sig):
+    """Handle shutdown signals gracefully"""
+    sig_name = signal.Signals(sig).name
+    print(f"[INFO] Received {sig_name}, initiating graceful shutdown...", flush=True)
+    log_event('shutdown', {'signal': sig_name, 'reason': 'signal'})
+    shutdown_event.set()
+
 async def start_server():
     """Start the SSH honeypot server"""
     try:
-        # Generate host key on startup
-        print("[DEBUG] Generating RSA host key...", flush=True)
-        key = asyncssh.generate_private_key('ssh-rsa', 2048)
-        print("[DEBUG] Host key generated", flush=True)
+        # Set up signal handlers
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, handle_signal, sig)
         
-        log_event('startup', {'port': PORT, 'version': '1.0'})
+        # Get or create persistent host key
+        key = get_or_create_host_key()
+        
+        log_event('startup', {'port': PORT, 'version': '1.1.0'})
         
         print(f"[DEBUG] Starting SSH server on port {PORT}...", flush=True)
         server = await asyncssh.create_server(
@@ -100,9 +146,16 @@ async def start_server():
         print(f"[DEBUG] Server started: {server}", flush=True)
         print(f"SSH Honeypot running on port {PORT}", flush=True)
         
-        # Run forever
-        while True:
-            await asyncio.sleep(3600)
+        # Wait for shutdown signal
+        await shutdown_event.wait()
+        
+        # Graceful shutdown
+        print("[INFO] Closing server...", flush=True)
+        server.close()
+        await server.wait_closed()
+        log_event('stopped', {'reason': 'graceful'})
+        print("[INFO] Server stopped gracefully", flush=True)
+        
     except Exception as e:
         print(f"[FATAL] Server error: {e}", flush=True)
         traceback.print_exc()
@@ -113,7 +166,8 @@ if __name__ == '__main__':
     try:
         asyncio.run(start_server())
     except KeyboardInterrupt:
-        print("Shutting down...")
+        # Already handled by signal handler, just exit cleanly
+        pass
     except Exception as e:
         print(f"[FATAL] {e}", flush=True)
         traceback.print_exc()

@@ -322,6 +322,62 @@ honeyclaw.on('shell_command', async (session, command) => {
 
 ---
 
+## Production Infrastructure
+
+### Current Deployment
+
+| Property | Value |
+|----------|-------|
+| **IP Address** | `149.248.202.23` |
+| **Port** | `8022` |
+| **App** | `honeyclaw-ssh` |
+| **Platform** | Fly.io |
+| **Region** | sjc (San Jose) |
+| **Monthly Cost** | ~$2 (dedicated IPv4) |
+
+### Fly.io Configuration
+
+```bash
+# Check status
+fly status -a honeyclaw-ssh
+
+# View logs
+fly logs -a honeyclaw-ssh
+
+# SSH into machine
+fly ssh console -a honeyclaw-ssh
+```
+
+### ⚠️ Key Learnings: Fly.io TCP Services
+
+**Dedicated IPv4 is REQUIRED for TCP services like SSH honeypots.**
+
+Fly.io's shared IPv4 addresses only work for HTTP(S) traffic. For raw TCP services (SSH, custom protocols), you **must** allocate a dedicated IPv4:
+
+```bash
+# Allocate dedicated IPv4 ($2/month)
+fly ips allocate-v4 --yes -a honeyclaw-ssh
+
+# Verify allocation
+fly ips list -a honeyclaw-ssh
+```
+
+**Why port 8022?**
+- Fly.io uses port 22 internally for `fly ssh console`
+- External SSH honeypots must use an alternate port (8022, 2222, etc.)
+- Configure in `fly.toml`:
+
+```toml
+[[services]]
+  internal_port = 22
+  protocol = "tcp"
+
+  [[services.ports]]
+    port = 8022
+```
+
+---
+
 ## Roadmap
 
 ### v0.1.0 (MVP)

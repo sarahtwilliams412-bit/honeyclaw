@@ -1,5 +1,13 @@
 # Honey Claw Architecture
 
+## Live Deployment
+
+**Current Production:** `149.248.202.23:8022` (Fly.io, honeyclaw-ssh app)
+
+See [DEPLOYMENT.md](./DEPLOYMENT.md) for setup details.
+
+---
+
 ## Overview
 
 Honey Claw is designed as a modular honeypot framework that integrates with OpenClaw agents for AI-powered threat detection and response.

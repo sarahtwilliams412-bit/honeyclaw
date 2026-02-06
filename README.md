@@ -9,6 +9,26 @@ Deploy deceptive infrastructure in seconds. Capture attacker TTPs. Let your AI a
 openclaw skill honeyclaw deploy --template basic-ssh --name prod-bastion-01
 ```
 
+## 🚀 Live Deployment
+
+**Honey Claw SSH Honeypot is LIVE!**
+
+| Property | Value |
+|----------|-------|
+| **IP Address** | `149.248.202.23` |
+| **Port** | `8022` |
+| **App** | `honeyclaw-ssh` on Fly.io |
+| **Region** | sjc (San Jose) |
+
+```bash
+# Test the honeypot (it will capture your attempt!)
+ssh -p 8022 admin@149.248.202.23
+```
+
+> 💡 **Note:** Uses port 8022 because Fly.io reserves port 22 for its internal SSH proxy.
+
+---
+
 ## Why Honey Claw?
 
 Traditional honeypots are static and obvious. Honey Claw brings AI-native deception:
@@ -128,6 +148,53 @@ alerts:
   slack_webhook: ${SLACK_WEBHOOK_URL}
   threshold: 10  # alerts per hour
 ```
+
+## Development
+
+### Prerequisites
+
+- Python 3.11+
+- Docker 24+ (for container templates)
+- Fly.io CLI (for deployment)
+
+### Local Development
+
+```bash
+# Clone the repository
+git clone https://github.com/sarahtwilliams412-bit/honeyclaw
+cd honeyclaw
+
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # or `venv\Scripts\activate` on Windows
+
+# Install dependencies
+pip install asyncssh aiohttp
+
+# Run the SSH honeypot locally
+python templates/basic-ssh/honeypot.py
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `8022` | Listening port |
+| `LOG_PATH` | `/var/log/honeypot/ssh.json` | Log file path |
+| `HOST_KEY_PATH` | `/data/ssh_host_key` | Persistent SSH host key |
+| `HONEYPOT_ID` | `basic-ssh` | Instance identifier |
+
+### Testing
+
+```bash
+# Test SSH honeypot connection (will log your attempt!)
+ssh -p 8022 test@localhost
+
+# View logs
+tail -f /var/log/honeypot/ssh.json
+```
+
+---
 
 ## Security Considerations
 
