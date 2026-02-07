@@ -67,6 +67,15 @@ except ImportError:
     def get_geo_fields(ip):
         return {}
 
+# MITRE ATT&CK enrichment (optional)
+try:
+    from src.analysis.mitre_mapper import enrich_event as mitre_enrich
+    MITRE_ENABLED = True
+except ImportError:
+    MITRE_ENABLED = False
+    def mitre_enrich(event):
+        return event
+
 # =============================================================================
 # Rate Limiting
 # =============================================================================
@@ -317,6 +326,13 @@ def log_event(event_type, data):
             event['correlation_id'] = corr_id
         geo = get_geo_fields(source_ip)
         event.update(geo)
+
+    # Enrich with MITRE ATT&CK mappings
+    if MITRE_ENABLED:
+        try:
+            mitre_enrich(event)
+        except Exception:
+            pass  # Non-critical enrichment failure
     
     # Ensure total log line doesn't exceed limits
     line = json.dumps(event)

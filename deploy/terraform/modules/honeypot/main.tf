@@ -1,167 +1,282 @@
-# =============================================================================
-# Honeyclaw Honeypot Instance Module
-# Deploys and manages honeypot containers with automated rebuild cycles
-# =============================================================================
+# Honeypot Container Module
+#
+# Deploys a honeypot template as an ECS Fargate service with:
+# - Scheduled task rotation (automated rebuild cycle)
+# - Health checks and auto-recovery
+# - Log shipping to S3 and CloudWatch
 
-variable "environment" { type = string }
-variable "vpc_id" { type = string }
-variable "private_subnet_ids" { type = list(string) }
-variable "public_subnet_ids" { type = list(string) }
-variable "honeypot_templates" { type = list(string) }
-variable "instance_type" { type = string }
-variable "ami_id" { type = string }
-variable "log_bucket_name" { type = string }
-variable "log_bucket_arn" { type = string }
-variable "siem_endpoint" { type = string }
-variable "siem_port" { type = number }
-variable "rebuild_interval_hours" { type = number }
-variable "health_check_port" { type = number }
-variable "ssh_honeypot_sg_id" { type = string }
-variable "api_honeypot_sg_id" { type = string }
+locals {
+  container_port = var.template_name == "basic-ssh" ? 8022 : (
+    var.template_name == "fake-api" ? 8080 : 8022
+  )
+  host_port = var.template_name == "basic-ssh" ? 22 : (
+    var.template_name == "fake-api" ? 8080 : 22
+  )
+}
 
-# --- IAM Role for Honeypot Instances ---
+# --- ECS Cluster ---
+resource "aws_ecs_cluster" "honeypot" {
+  name = "${var.name_prefix}-${var.template_name}"
 
-resource "aws_iam_role" "honeypot" {
-  name_prefix = "honeyclaw-instance-"
+  setting {
+    name  = "containerInsights"
+    value = "enabled"
+  }
+
+  tags = {
+    Name     = "${var.name_prefix}-${var.template_name}"
+    Template = var.template_name
+  }
+}
+
+# --- ECR Repository ---
+resource "aws_ecr_repository" "honeypot" {
+  name                 = "${var.name_prefix}/${var.template_name}"
+  image_tag_mutability = "IMMUTABLE"
+  force_delete         = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  encryption_configuration {
+    encryption_type = "AES256"
+  }
+
+  tags = {
+    Name     = "${var.name_prefix}-${var.template_name}"
+    Template = var.template_name
+  }
+}
+
+# --- Task Execution Role ---
+resource "aws_iam_role" "task_execution" {
+  name = "${var.name_prefix}-${var.template_name}-exec"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Action = "sts:AssumeRole"
       Effect = "Allow"
-      Principal = { Service = "ec2.amazonaws.com" }
+      Principal = {
+        Service = "ecs-tasks.amazonaws.com"
+      }
     }]
   })
 }
 
-resource "aws_iam_role_policy" "honeypot_logs" {
-  name_prefix = "honeyclaw-s3-logs-"
-  role        = aws_iam_role.honeypot.id
+resource "aws_iam_role_policy_attachment" "task_execution" {
+  role       = aws_iam_role.task_execution.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+# --- Task Role (what the container can access) ---
+resource "aws_iam_role" "task" {
+  name = "${var.name_prefix}-${var.template_name}-task"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = {
+        Service = "ecs-tasks.amazonaws.com"
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "task_s3_logs" {
+  name = "${var.name_prefix}-${var.template_name}-s3-logs"
+  role = aws_iam_role.task.id
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Action = [
         "s3:PutObject",
-        "s3:GetObject",
-        "s3:ListBucket"
+        "s3:PutObjectRetention",
       ]
       Effect   = "Allow"
-      Resource = [
-        var.log_bucket_arn,
-        "${var.log_bucket_arn}/*"
-      ]
+      Resource = "${var.log_bucket_arn}/*"
     }]
   })
 }
 
-resource "aws_iam_instance_profile" "honeypot" {
-  name_prefix = "honeyclaw-"
-  role        = aws_iam_role.honeypot.name
-}
+# --- Task Definition ---
+resource "aws_ecs_task_definition" "honeypot" {
+  family                   = "${var.name_prefix}-${var.template_name}"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 512
+  memory                   = 256
+  execution_role_arn       = aws_iam_role.task_execution.arn
+  task_role_arn            = aws_iam_role.task.arn
 
-# --- Launch Template ---
+  container_definitions = jsonencode([{
+    name      = var.template_name
+    image     = "${aws_ecr_repository.honeypot.repository_url}:latest"
+    essential = true
 
-resource "aws_launch_template" "honeypot" {
-  for_each = toset(var.honeypot_templates)
+    portMappings = [{
+      containerPort = local.container_port
+      hostPort      = local.container_port
+      protocol      = "tcp"
+    }]
 
-  name_prefix   = "honeyclaw-${each.key}-"
-  image_id      = var.ami_id != "" ? var.ami_id : data.aws_ami.amazon_linux.id
-  instance_type = var.instance_type
+    environment = [
+      { name = "HONEYPOT_TEMPLATE", value = var.template_name },
+      { name = "LOG_BUCKET", value = var.log_bucket_name },
+      { name = "ENVIRONMENT", value = var.environment },
+      { name = "RATELIMIT_ENABLED", value = "true" },
+      { name = "RATELIMIT_CONN_PER_MIN", value = "20" },
+      { name = "RATELIMIT_AUTH_PER_HOUR", value = "200" },
+    ]
 
-  iam_instance_profile {
-    arn = aws_iam_instance_profile.honeypot.arn
-  }
-
-  metadata_options {
-    http_tokens                 = "required"
-    http_put_response_hop_limit = 1
-    http_endpoint               = "enabled"
-  }
-
-  monitoring {
-    enabled = true
-  }
-
-  user_data = base64encode(templatefile("${path.module}/userdata.sh.tpl", {
-    template_name          = each.key
-    log_bucket             = var.log_bucket_name
-    siem_endpoint          = var.siem_endpoint
-    siem_port              = var.siem_port
-    health_check_port      = var.health_check_port
-    rebuild_interval_hours = var.rebuild_interval_hours
-    environment            = var.environment
-  }))
-
-  tag_specifications {
-    resource_type = "instance"
-    tags = {
-      Name     = "honeyclaw-${each.key}-${var.environment}"
-      Template = each.key
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = "/honeyclaw/${var.name_prefix}/honeypot"
+        "awslogs-region"        = var.aws_region
+        "awslogs-stream-prefix" = var.template_name
+      }
     }
+
+    healthCheck = {
+      command     = ["CMD-SHELL", "curl -f http://localhost:${local.container_port}/health || exit 1"]
+      interval    = 30
+      timeout     = 5
+      retries     = 3
+      startPeriod = 60
+    }
+
+    # Security: read-only root filesystem
+    readonlyRootFilesystem = true
+
+    # Writable tmp and data dirs via tmpfs
+    mountPoints = [
+      {
+        sourceVolume  = "tmp"
+        containerPath = "/tmp"
+        readOnly      = false
+      },
+      {
+        sourceVolume  = "data"
+        containerPath = "/data"
+        readOnly      = false
+      },
+    ]
+
+    # Drop all Linux capabilities
+    linuxParameters = {
+      capabilities = {
+        drop = ["ALL"]
+      }
+      # PID limit to prevent fork bombs
+      maxPids = 100
+    }
+  }])
+
+  volume {
+    name = "tmp"
+  }
+
+  volume {
+    name = "data"
+  }
+
+  tags = {
+    Name     = "${var.name_prefix}-${var.template_name}"
+    Template = var.template_name
   }
 }
 
-# --- Auto Scaling Group ---
+# --- ECS Service ---
+resource "aws_ecs_service" "honeypot" {
+  name            = "${var.name_prefix}-${var.template_name}"
+  cluster         = aws_ecs_cluster.honeypot.id
+  task_definition = aws_ecs_task_definition.honeypot.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
 
-resource "aws_autoscaling_group" "honeypot" {
-  for_each = toset(var.honeypot_templates)
+  # Force new deployment on service update (for rebuild cycle)
+  force_new_deployment = true
 
-  name_prefix      = "honeyclaw-${each.key}-"
-  min_size         = 1
-  max_size         = 3
-  desired_capacity = 1
-
-  vpc_zone_identifier = var.private_subnet_ids
-
-  launch_template {
-    id      = aws_launch_template.honeypot[each.key].id
-    version = "$Latest"
+  network_configuration {
+    subnets          = var.public_subnet_ids
+    security_groups  = [var.honeypot_sg_id]
+    assign_public_ip = true
   }
 
-  health_check_type         = "EC2"
-  health_check_grace_period = 300
-
-  tag {
-    key                 = "Name"
-    value               = "honeyclaw-${each.key}-${var.environment}"
-    propagate_at_launch = true
+  deployment_configuration {
+    # Blue-green: start new task before killing old one
+    minimum_healthy_percent = 100
+    maximum_percent         = 200
   }
 
-  tag {
-    key                 = "AutoRebuild"
-    value               = "true"
-    propagate_at_launch = true
+  tags = {
+    Name     = "${var.name_prefix}-${var.template_name}"
+    Template = var.template_name
   }
 }
 
-# --- Scheduled Rebuild (Instance Refresh) ---
+# --- Scheduled Rebuild (EventBridge + ECS rolling update) ---
+# Triggers a new deployment every N hours, which forces ECS to
+# pull the latest image and restart all tasks (blue-green).
 
-resource "aws_autoscaling_schedule" "rebuild" {
-  for_each = toset(var.honeypot_templates)
+resource "aws_iam_role" "scheduler" {
+  name = "${var.name_prefix}-${var.template_name}-scheduler"
 
-  scheduled_action_name  = "honeyclaw-rebuild-${each.key}"
-  autoscaling_group_name = aws_autoscaling_group.honeypot[each.key].name
-  recurrence             = "0 */${var.rebuild_interval_hours} * * *"
-  min_size               = 1
-  max_size               = 3
-  desired_capacity       = 1
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = {
+        Service = "scheduler.amazonaws.com"
+      }
+    }]
+  })
 }
 
-# --- Default AMI lookup ---
+resource "aws_iam_role_policy" "scheduler_ecs" {
+  name = "${var.name_prefix}-${var.template_name}-scheduler-ecs"
+  role = aws_iam_role.scheduler.id
 
-data "aws_ami" "amazon_linux" {
-  most_recent = true
-  owners      = ["amazon"]
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = [
+        "ecs:UpdateService",
+        "ecs:DescribeServices",
+      ]
+      Effect   = "Allow"
+      Resource = aws_ecs_service.honeypot.id
+    }]
+  })
+}
 
-  filter {
-    name   = "name"
-    values = ["al2023-ami-*-x86_64"]
+resource "aws_scheduler_schedule" "rebuild" {
+  name       = "${var.name_prefix}-${var.template_name}-rebuild"
+  group_name = "default"
+
+  flexible_time_window {
+    mode                      = "FLEXIBLE"
+    maximum_window_in_minutes = 30
   }
-}
 
-# --- Outputs ---
+  schedule_expression = "rate(${var.rebuild_interval_hours} hours)"
 
-output "instance_ids" {
-  value = { for k, v in aws_autoscaling_group.honeypot : k => v.id }
+  target {
+    arn      = "arn:aws:scheduler:::aws-sdk:ecs:updateService"
+    role_arn = aws_iam_role.scheduler.arn
+
+    input = jsonencode({
+      Cluster            = aws_ecs_cluster.honeypot.name
+      Service            = aws_ecs_service.honeypot.name
+      ForceNewDeployment = true
+    })
+  }
+
+  state = "ENABLED"
 }

@@ -1,123 +1,81 @@
-#include <tunables/global>
+# AppArmor profile for HoneyClaw SSH Honeypot
+#
+# Install:
+#   sudo cp deploy/apparmor/honeyclaw-ssh.profile /etc/apparmor.d/honeyclaw-ssh
+#   sudo apparmor_parser -r /etc/apparmor.d/honeyclaw-ssh
+#
+# Use with Docker:
+#   docker run --security-opt apparmor=honeyclaw-ssh ...
 
-# AppArmor profile for HoneyClaw SSH honeypot containers.
-# Restricts filesystem access, network capabilities, and system calls
-# to the minimum required for SSH honeypot operation.
+#include <tunables/global>
 
 profile honeyclaw-ssh flags=(attach_disconnected,mediate_deleted) {
   #include <abstractions/base>
   #include <abstractions/nameservice>
   #include <abstractions/python>
 
-  # Network: allow only TCP listening (inbound SSH) and established connections
-  network inet tcp,
-  network inet6 tcp,
+  # Deny all capabilities by default, grant only what's needed
+  capability net_bind_service,
+  capability setuid,
+  capability setgid,
 
-  # DNS resolution for log shipping / SIEM integration
-  network inet udp,
-  network inet6 udp,
+  # Network: allow TCP listen (honeypot) and DNS
+  network tcp,
+  network udp,
 
-  # Deny raw sockets (no ICMP, no packet sniffing)
-  deny network raw,
-  deny network packet,
-
-  # Filesystem - read-only access to application files
-  /app/** r,
-  /common/** r,
-  /usr/** r,
-  /lib/** r,
-  /lib64/** r,
-  /etc/ld.so.cache r,
-  /etc/ld.so.preload r,
-  /etc/nsswitch.conf r,
-  /etc/ssl/** r,
-  /etc/resolv.conf r,
-  /etc/hosts r,
-  /etc/localtime r,
-  /etc/passwd r,
-  /etc/group r,
-
-  # Python runtime
-  /usr/local/bin/python* ix,
+  # Python interpreter
   /usr/bin/python3* rix,
   /usr/local/bin/python3* rix,
-  /usr/local/lib/python*/** r,
   /usr/lib/python3/** r,
+  /usr/local/lib/python3/** r,
 
-  # Honeypot application
-  /opt/honeyclaw/** r,
-  /opt/honeyclaw/src/** r,
-  /opt/honeyclaw/templates/** r,
+  # Application code (read-only)
+  /app/** r,
+  /app/**/*.py r,
+  /app/**/*.pyc r,
 
-  # Logging - write access only to honeypot log directory
-  /var/log/honeypot/** rw,
-  /var/log/honeypot/ r,
-  /var/log/honeyclaw/** rw,
-  /var/lib/honeyclaw/** rw,
+  # Data directory (logs, recordings)
+  /data/ rw,
+  /data/** rw,
+  /data/logs/** w,
 
-  # Temporary files needed by Python
+  # Temp files
+  /tmp/ rw,
   /tmp/** rw,
-  /tmp/ r,
 
-  # /proc and /sys - limited read access (for fake responses)
-  @{PROC}/sys/kernel/random/uuid r,
-  @{PROC}/sys/kernel/hostname r,
-  @{PROC}/meminfo r,
-  @{PROC}/cpuinfo r,
-  @{PROC}/loadavg r,
-  @{PROC}/net/tcp r,
-  @{PROC}/net/tcp6 r,
-  @{PROC}/self/fd/ r,
-  @{PROC}/self/maps r,
-  @{PROC}/@{pid}/fd/ r,
-  @{PROC}/@{pid}/cmdline r,
-  @{PROC}/@{pid}/stat r,
-  owner @{PROC}/self/status r,
+  # Required system files
+  /etc/passwd r,
+  /etc/group r,
+  /etc/nsswitch.conf r,
+  /etc/resolv.conf r,
+  /etc/hosts r,
+  /etc/ssl/** r,
+  /proc/sys/net/** r,
 
-  # Deny sensitive filesystem areas
-  deny /etc/shadow r,
-  deny /root/** rw,
-  deny /home/** rw,
-  deny /boot/** rw,
-  deny /sys/firmware/** r,
-  deny /sys/kernel/security/** r,
-
-  # Deny container escape vectors
-  deny /proc/sysrq-trigger rw,
-  deny /proc/sys/kernel/core_pattern rw,
-  deny /proc/sys/kernel/modprobe rw,
-  deny /proc/kcore r,
-  deny /proc/kmem rw,
+  # Deny dangerous operations
   deny /proc/*/mem rw,
-  deny /proc/*/root/** rw,
-  deny /sys/fs/cgroup/** w,
-  deny /sys/devices/virtual/dmi/** r,
+  deny /proc/sysrq-trigger rw,
+  deny /proc/kcore r,
+  deny /sys/firmware/** rw,
+  deny /sys/kernel/** rw,
 
   # Deny mount operations
   deny mount,
   deny umount,
   deny pivot_root,
 
-  # Deny ptrace (anti-debugging / anti-escape)
+  # Deny ptrace (prevents debugging/process injection)
   deny ptrace,
 
-  # Deny loading kernel modules
-  deny @{PROC}/sys/kernel/modules_disabled w,
+  # Deny raw sockets (prevents network sniffing)
+  deny network raw,
+  deny network packet,
 
-  # Deny access to Docker socket
-  deny /var/run/docker.sock rw,
-  deny /run/docker.sock rw,
-
-  # Deny dangerous capabilities
-  deny capability sys_admin,
-  deny capability sys_ptrace,
-  deny capability sys_module,
-  deny capability sys_rawio,
-  deny capability net_admin,
-  deny capability sys_boot,
-  deny capability sys_time,
-  deny capability mknod,
-
-  # Signal handling - only to own processes
-  signal (send,receive) peer=honeyclaw-ssh,
+  # Deny write to system paths
+  deny /bin/** w,
+  deny /sbin/** w,
+  deny /usr/** w,
+  deny /etc/** w,
+  deny /boot/** rw,
+  deny /root/** rw,
 }

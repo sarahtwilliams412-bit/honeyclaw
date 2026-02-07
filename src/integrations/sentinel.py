@@ -187,6 +187,7 @@ class AzureSentinelConnector(SIEMConnector):
             "ThreatCategory": event_type_to_category(event.event_type),
             "ThreatTactics": ",".join(event.mitre_tactics) if event.mitre_tactics else None,
             "ThreatTechniques": ",".join(event.mitre_techniques) if event.mitre_techniques else None,
+            "ThreatTechniqueNames": ",".join(event.mitre_technique_names) if event.mitre_technique_names else None,
             
             # Honeyclaw-specific fields
             "HoneypotId": event.honeypot_id,

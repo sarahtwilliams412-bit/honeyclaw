@@ -12,6 +12,15 @@ from enum import IntEnum
 from typing import Any, Callable, Dict, List, Optional
 from dataclasses import dataclass, field
 
+# MITRE ATT&CK enrichment (optional - fails gracefully)
+try:
+    from src.analysis.mitre_mapper import enrich_event as _mitre_enrich
+    _MITRE_AVAILABLE = True
+except ImportError:
+    _MITRE_AVAILABLE = False
+    def _mitre_enrich(event):
+        return event
+
 
 class Severity(IntEnum):
     """Alert severity levels (higher = more urgent)"""
@@ -350,13 +359,20 @@ class AlertEngine:
             List of alert dicts for triggered rules
         """
         import time
-        
+
         alerts = []
         current_time = time.time()
-        
+
+        # Enrich event with MITRE ATT&CK mappings
+        if _MITRE_AVAILABLE:
+            try:
+                _mitre_enrich(event)
+            except Exception:
+                pass  # Non-critical enrichment failure
+
         # Clean expired dedup entries periodically
         self._clean_dedup_cache(current_time)
-        
+
         for rule in self.rules:
             # Skip disabled rules
             if not rule.enabled:
@@ -386,7 +402,7 @@ class AlertEngine:
             # Record for dedup
             self._dedup_cache[dedup_hash] = (current_time, 1)
             
-            # Generate alert
+            # Generate alert with MITRE context
             alert = {
                 'rule': rule.name,
                 'description': rule.description,
@@ -396,6 +412,8 @@ class AlertEngine:
                 'event_type': event_type,
                 'event': event,
                 'timestamp': current_time,
+                'mitre_tactics': event.get('mitre_tactics', []),
+                'mitre_techniques': event.get('mitre_techniques', []),
             }
             alerts.append(alert)
         

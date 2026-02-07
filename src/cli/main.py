@@ -7,6 +7,7 @@ import argparse
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import webbrowser
 from datetime import datetime
@@ -528,6 +529,146 @@ def cmd_report_lookup(args):
     asyncio.run(do_lookup())
 
 
+# === Deploy Commands ===
+
+def _get_deploy_dir():
+    """Get the deploy directory path"""
+    return Path(__file__).parent.parent.parent / "deploy"
+
+
+def cmd_deploy_status(args):
+    """Show deployment infrastructure status"""
+    deploy_dir = _get_deploy_dir()
+
+    print("=== HoneyClaw Deployment Infrastructure ===\n")
+
+    # Check available deployment methods
+    methods = {
+        "Terraform": deploy_dir / "terraform" / "main.tf",
+        "Fly.io": deploy_dir / "flyio" / "deploy.sh",
+        "Kubernetes (Helm)": deploy_dir / "kubernetes" / "helm" / "honeyclaw" / "Chart.yaml",
+        "Kubernetes (Kustomize)": deploy_dir / "kubernetes" / "manifests" / "kustomization.yaml",
+    }
+
+    print("Available deployment methods:")
+    for name, path in methods.items():
+        status = "ready" if path.exists() else "not found"
+        marker = "[+]" if path.exists() else "[-]"
+        print(f"  {marker} {name}: {status}")
+
+    # Check security profiles
+    print("\nSecurity profiles:")
+    profiles = {
+        "AppArmor (SSH)": deploy_dir / "apparmor" / "honeyclaw-ssh.profile",
+        "AppArmor (API)": deploy_dir / "apparmor" / "honeyclaw-api.profile",
+        "AppArmor (Enterprise)": deploy_dir / "apparmor" / "honeyclaw-enterprise.profile",
+        "Seccomp": deploy_dir / "seccomp" / "honeyclaw-default.json",
+    }
+    for name, path in profiles.items():
+        marker = "[+]" if path.exists() else "[-]"
+        print(f"  {marker} {name}")
+
+    # Check for Fly.io apps if flyctl is available
+    print("\nFly.io status:")
+    try:
+        result = subprocess.run(
+            ["fly", "apps", "list", "--json"],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0:
+            apps = json.loads(result.stdout)
+            honeyclaw_apps = [a for a in apps if a.get("Name", "").startswith("honeyclaw")]
+            if honeyclaw_apps:
+                for app in honeyclaw_apps:
+                    print(f"  [+] {app['Name']} ({app.get('Status', 'unknown')})")
+            else:
+                print("  No honeyclaw apps deployed")
+        else:
+            print("  flyctl not authenticated (run: fly auth login)")
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        print("  flyctl not installed")
+
+    # Check rebuild interval config
+    rebuild_hours = os.environ.get("HONEYCLAW_REBUILD_INTERVAL_HOURS", "24")
+    print(f"\nRebuild cycle: every {rebuild_hours} hours")
+
+
+def cmd_deploy_flyio(args):
+    """Deploy a honeypot template to Fly.io"""
+    deploy_script = _get_deploy_dir() / "flyio" / "deploy.sh"
+
+    if not deploy_script.exists():
+        print("Error: deploy/flyio/deploy.sh not found", file=sys.stderr)
+        sys.exit(1)
+
+    cmd = [str(deploy_script), args.template]
+    if args.region:
+        cmd.append(args.region)
+
+    env = os.environ.copy()
+    if args.app_prefix:
+        env["APP_PREFIX"] = args.app_prefix
+
+    try:
+        result = subprocess.run(cmd, env=env)
+        sys.exit(result.returncode)
+    except KeyboardInterrupt:
+        print("\nDeployment cancelled.")
+        sys.exit(1)
+
+
+def cmd_deploy_rotate(args):
+    """Rotate (rebuild) honeypot containers"""
+    rotate_script = _get_deploy_dir() / "flyio" / "rotate.sh"
+
+    if not rotate_script.exists():
+        print("Error: deploy/flyio/rotate.sh not found", file=sys.stderr)
+        sys.exit(1)
+
+    cmd = [str(rotate_script)]
+    if args.app:
+        cmd.append(args.app)
+
+    env = os.environ.copy()
+    if args.dry_run:
+        env["DRY_RUN"] = "true"
+    if args.export_bucket:
+        env["EXPORT_BUCKET"] = args.export_bucket
+
+    try:
+        result = subprocess.run(cmd, env=env)
+        sys.exit(result.returncode)
+    except KeyboardInterrupt:
+        print("\nRotation cancelled.")
+        sys.exit(1)
+
+
+def cmd_deploy_terraform(args):
+    """Run Terraform commands for infrastructure management"""
+    tf_dir = _get_deploy_dir() / "terraform"
+
+    if not tf_dir.exists():
+        print("Error: deploy/terraform/ not found", file=sys.stderr)
+        sys.exit(1)
+
+    tf_action = args.action
+    cmd = ["terraform", tf_action]
+
+    if args.var_file:
+        cmd.extend(["-var-file", args.var_file])
+    if tf_action in ("apply", "destroy") and args.auto_approve:
+        cmd.append("-auto-approve")
+
+    try:
+        result = subprocess.run(cmd, cwd=str(tf_dir))
+        sys.exit(result.returncode)
+    except FileNotFoundError:
+        print("Error: terraform not found. Install from https://www.terraform.io/downloads", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("\nTerraform cancelled.")
+        sys.exit(1)
+
 # === Logs Commands ===
 
 def cmd_logs_correlations(args):
@@ -846,6 +987,38 @@ def cli():
     report_lookup_parser.add_argument('--json', '-j', action='store_true', help='Output as JSON')
     report_lookup_parser.add_argument('--verbose', '-v', action='store_true', help='Show raw WHOIS')
     report_lookup_parser.set_defaults(func=cmd_report_lookup)
+
+
+    # === Deploy command group ===
+    deploy_parser = subparsers.add_parser('deploy', help='Infrastructure deployment commands')
+    deploy_subparsers = deploy_parser.add_subparsers(dest='subcommand', help='Deploy subcommands')
+
+    # deploy status
+    deploy_status_parser = deploy_subparsers.add_parser('status', help='Show deployment infrastructure status')
+    deploy_status_parser.set_defaults(func=cmd_deploy_status)
+
+    # deploy flyio
+    deploy_flyio_parser = deploy_subparsers.add_parser('flyio', help='Deploy to Fly.io')
+    deploy_flyio_parser.add_argument('template', choices=['basic-ssh', 'fake-api', 'enterprise-sim'],
+                                     help='Honeypot template to deploy')
+    deploy_flyio_parser.add_argument('--region', '-r', default='sjc', help='Fly.io region (default: sjc)')
+    deploy_flyio_parser.add_argument('--app-prefix', help='App name prefix (default: honeyclaw)')
+    deploy_flyio_parser.set_defaults(func=cmd_deploy_flyio)
+
+    # deploy rotate
+    deploy_rotate_parser = deploy_subparsers.add_parser('rotate', help='Rotate (rebuild) honeypot containers')
+    deploy_rotate_parser.add_argument('--app', '-a', help='Specific app to rotate (default: all)')
+    deploy_rotate_parser.add_argument('--dry-run', '-n', action='store_true', help='Show what would be rotated')
+    deploy_rotate_parser.add_argument('--export-bucket', help='S3 bucket for pre-rotation data export')
+    deploy_rotate_parser.set_defaults(func=cmd_deploy_rotate)
+
+    # deploy terraform
+    deploy_tf_parser = deploy_subparsers.add_parser('terraform', help='Run Terraform infrastructure commands')
+    deploy_tf_parser.add_argument('action', choices=['init', 'plan', 'apply', 'destroy', 'output'],
+                                  help='Terraform action')
+    deploy_tf_parser.add_argument('--var-file', help='Path to .tfvars file')
+    deploy_tf_parser.add_argument('--auto-approve', action='store_true', help='Skip approval prompt')
+    deploy_tf_parser.set_defaults(func=cmd_deploy_terraform)
     
     # === Logs command group ===
     logs_parser = subparsers.add_parser('logs', help='Enhanced logging commands')
@@ -891,6 +1064,10 @@ def cli():
 
     if args.command == 'report' and not args.subcommand:
         report_parser.print_help()
+        sys.exit(0)
+
+    if args.command == 'deploy' and not args.subcommand:
+        deploy_parser.print_help()
         sys.exit(0)
 
     if args.command == 'logs' and not args.subcommand:
