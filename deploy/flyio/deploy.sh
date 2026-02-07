@@ -28,6 +28,7 @@ REGION="${2:-sjc}"
 APP_PREFIX="${APP_PREFIX:-honeyclaw}"
 HEALTH_CHECK_RETRIES="${HEALTH_CHECK_RETRIES:-5}"
 HEALTH_CHECK_DELAY="${HEALTH_CHECK_DELAY:-10}"
+HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-120}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -98,6 +99,14 @@ create_app_if_needed() {
     fi
 }
 
+set_secrets() {
+    log_info "Setting secrets..."
+    fly secrets set \
+        HONEYCLAW_TEMPLATE="$TEMPLATE" \
+        HONEYPOT_ID="$APP_NAME" \
+        --app "$APP_NAME" 2>/dev/null || true
+}
+
 capture_pre_deploy_state() {
     log_info "Capturing pre-deployment state..."
     PRE_DEPLOY_VERSION=$(fly releases list -a "$APP_NAME" --json 2>/dev/null | \
@@ -118,6 +127,7 @@ deploy() {
         --config "$tmp_config" \
         --region "$REGION" \
         --strategy rolling \
+        --wait-timeout "$HEALTH_TIMEOUT" \
         --yes
 
     rm -f "$tmp_config"
@@ -155,6 +165,16 @@ else:
 
         if [ "$status" = "healthy" ]; then
             log_success "All machines healthy"
+            
+            # Also check HTTP health endpoint
+            HEALTH_URL="https://${APP_NAME}.fly.dev:9090/health"
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL" 2>/dev/null || echo "000")
+            if [ "$HTTP_CODE" = "200" ]; then
+                log_success "Health endpoint responding"
+                return 0
+            else
+                log_warn "Health endpoint returned $HTTP_CODE"
+            fi
             return 0
         fi
 
@@ -191,6 +211,7 @@ main() {
 
     preflight
     create_app_if_needed
+    set_secrets
     capture_pre_deploy_state
     deploy
 
@@ -198,8 +219,10 @@ main() {
         echo ""
         log_success "Deployment successful!"
         log_info "App: https://${APP_NAME}.fly.dev"
+        log_info "Health: https://${APP_NAME}.fly.dev:9090/health"
         log_info "Status: fly status -a $APP_NAME"
         log_info "Logs: fly logs -a $APP_NAME"
+        log_info "SSH: fly ssh console --app $APP_NAME"
     else
         log_error "Deployment health check failed!"
         rollback

@@ -5,6 +5,24 @@
 # - Health checks and auto-recovery
 # - Log shipping to S3 and CloudWatch
 
+variable "name_prefix" { type = string }
+variable "environment" { type = string }
+variable "template_name" { type = string }
+variable "aws_region" { type = string }
+variable "vpc_id" { type = string }
+variable "public_subnet_ids" { type = list(string) }
+variable "private_subnet_ids" { type = list(string) }
+variable "honeypot_sg_id" { type = string }
+variable "log_bucket_name" { type = string }
+variable "log_bucket_arn" { type = string }
+variable "instance_type" { type = string }
+variable "ami_id" { type = string }
+variable "rebuild_interval_hours" { type = number }
+variable "max_instances" { type = number }
+variable "health_check_port" { type = number }
+variable "siem_endpoint" { type = string }
+variable "siem_port" { type = number }
+
 locals {
   container_port = var.template_name == "basic-ssh" ? 8022 : (
     var.template_name == "fake-api" ? 8080 : 8022
@@ -96,11 +114,27 @@ resource "aws_iam_role_policy" "task_s3_logs" {
       Action = [
         "s3:PutObject",
         "s3:PutObjectRetention",
+        "s3:GetObject",
+        "s3:ListBucket"
       ]
       Effect   = "Allow"
-      Resource = "${var.log_bucket_arn}/*"
+      Resource = [
+        var.log_bucket_arn,
+        "${var.log_bucket_arn}/*"
+      ]
     }]
   })
+}
+
+# --- CloudWatch Log Group ---
+resource "aws_cloudwatch_log_group" "honeypot" {
+  name              = "/honeyclaw/${var.name_prefix}/${var.template_name}"
+  retention_in_days = 30
+
+  tags = {
+    Name     = "${var.name_prefix}-${var.template_name}-logs"
+    Template = var.template_name
+  }
 }
 
 # --- Task Definition ---
@@ -118,16 +152,26 @@ resource "aws_ecs_task_definition" "honeypot" {
     image     = "${aws_ecr_repository.honeypot.repository_url}:latest"
     essential = true
 
-    portMappings = [{
-      containerPort = local.container_port
-      hostPort      = local.container_port
-      protocol      = "tcp"
-    }]
+    portMappings = [
+      {
+        containerPort = local.container_port
+        hostPort      = local.container_port
+        protocol      = "tcp"
+      },
+      {
+        containerPort = var.health_check_port
+        hostPort      = var.health_check_port
+        protocol      = "tcp"
+      }
+    ]
 
     environment = [
       { name = "HONEYPOT_TEMPLATE", value = var.template_name },
+      { name = "HONEYPOT_ID", value = "${var.name_prefix}-${var.template_name}" },
       { name = "LOG_BUCKET", value = var.log_bucket_name },
       { name = "ENVIRONMENT", value = var.environment },
+      { name = "HONEYCLAW_HEALTH_PORT", value = tostring(var.health_check_port) },
+      { name = "HONEYCLAW_SELF_HEAL_ENABLED", value = "true" },
       { name = "RATELIMIT_ENABLED", value = "true" },
       { name = "RATELIMIT_CONN_PER_MIN", value = "20" },
       { name = "RATELIMIT_AUTH_PER_HOUR", value = "200" },
@@ -136,14 +180,14 @@ resource "aws_ecs_task_definition" "honeypot" {
     logConfiguration = {
       logDriver = "awslogs"
       options = {
-        "awslogs-group"         = "/honeyclaw/${var.name_prefix}/honeypot"
+        "awslogs-group"         = aws_cloudwatch_log_group.honeypot.name
         "awslogs-region"        = var.aws_region
         "awslogs-stream-prefix" = var.template_name
       }
     }
 
     healthCheck = {
-      command     = ["CMD-SHELL", "curl -f http://localhost:${local.container_port}/health || exit 1"]
+      command     = ["CMD-SHELL", "curl -f http://localhost:${var.health_check_port}/health || exit 1"]
       interval    = 30
       timeout     = 5
       retries     = 3
@@ -165,6 +209,16 @@ resource "aws_ecs_task_definition" "honeypot" {
         containerPath = "/data"
         readOnly      = false
       },
+      {
+        sourceVolume  = "var-log"
+        containerPath = "/var/log/honeyclaw"
+        readOnly      = false
+      },
+      {
+        sourceVolume  = "recordings"
+        containerPath = "/var/lib/honeyclaw/recordings"
+        readOnly      = false
+      },
     ]
 
     # Drop all Linux capabilities
@@ -183,6 +237,14 @@ resource "aws_ecs_task_definition" "honeypot" {
 
   volume {
     name = "data"
+  }
+
+  volume {
+    name = "var-log"
+  }
+
+  volume {
+    name = "recordings"
   }
 
   tags = {
@@ -279,4 +341,17 @@ resource "aws_scheduler_schedule" "rebuild" {
   }
 
   state = "ENABLED"
+}
+
+# --- Outputs ---
+output "instance_ids" {
+  value = aws_ecs_service.honeypot.id
+}
+
+output "cluster_name" {
+  value = aws_ecs_cluster.honeypot.name
+}
+
+output "service_name" {
+  value = aws_ecs_service.honeypot.name
 }

@@ -49,6 +49,15 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: HONEYPOT_ID
+              value: "honeyclaw-{{ .Values.template }}"
+            - name: HONEYCLAW_TEMPLATE
+              value: {{ .Values.template }}
+            - name: HONEYCLAW_HEALTH_PORT
+              value: "{{ .Values.healthCheck.port }}"
+            - name: HONEYCLAW_SELF_HEAL_ENABLED
+              value: "true"
           ports:
             {{- range .Values.service.ports }}
             - name: {{ .name }}
@@ -69,9 +78,19 @@ spec:
             {{- end }}
           {{- end }}
           livenessProbe:
-            {{- toYaml .Values.livenessProbe | nindent 12 }}
+            httpGet:
+              path: {{ .Values.healthCheck.path }}
+              port: {{ .Values.healthCheck.port }}
+            initialDelaySeconds: {{ .Values.healthCheck.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthCheck.periodSeconds }}
+            timeoutSeconds: {{ .Values.healthCheck.timeoutSeconds }}
+            failureThreshold: {{ .Values.healthCheck.failureThreshold }}
           readinessProbe:
-            {{- toYaml .Values.readinessProbe | nindent 12 }}
+            httpGet:
+              path: {{ .Values.healthCheck.path }}
+              port: {{ .Values.healthCheck.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
@@ -79,10 +98,20 @@ spec:
               mountPath: /data
             - name: tmp
               mountPath: /tmp
+            - name: var-log
+              mountPath: /var/log/honeyclaw
+            - name: recordings
+              mountPath: /var/lib/honeyclaw/recordings
       volumes:
         - name: tmp
           emptyDir:
-            sizeLimit: 50Mi
+            sizeLimit: 100Mi
+        - name: var-log
+          emptyDir:
+            sizeLimit: 500Mi
+        - name: recordings
+          emptyDir:
+            sizeLimit: 1Gi
         {{- if .Values.persistence.enabled }}
         - name: data
           persistentVolumeClaim:

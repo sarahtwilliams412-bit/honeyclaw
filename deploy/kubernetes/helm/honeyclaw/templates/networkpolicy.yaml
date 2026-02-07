@@ -38,4 +38,12 @@ spec:
         - protocol: TCP
           port: 514
     {{- end }}
+    # Allow egress per custom rules
+    {{- range .Values.networkPolicy.egressRules }}
+    - ports:
+        {{- range .ports }}
+        - port: {{ .port }}
+          protocol: {{ .protocol }}
+        {{- end }}
+    {{- end }}
 {{- end }}

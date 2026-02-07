@@ -3,12 +3,33 @@
 # Creates S3 buckets with Object Lock for tamper-proof log retention.
 # Includes cross-region replication for disaster recovery.
 
+variable "name_prefix" { type = string }
+variable "environment" { type = string }
+variable "aws_region" { type = string }
+variable "log_bucket_name" { type = string }
+variable "retention_days" { type = number }
+variable "object_lock_days" { type = number }
+variable "enable_replication" { type = bool }
+variable "replication_bucket_arn" { type = string }
+
 resource "aws_s3_bucket" "logs" {
-  bucket = "${var.name_prefix}-logs"
+  bucket = var.log_bucket_name
+
+  object_lock_enabled = true
 
   tags = {
-    Name    = "${var.name_prefix}-logs"
-    Purpose = "honeypot-logs"
+    Name      = var.log_bucket_name
+    Purpose   = "honeypot-log-storage"
+    Immutable = "true"
+  }
+}
+
+# Enable versioning (required for Object Lock)
+resource "aws_s3_bucket_versioning" "logs" {
+  bucket = aws_s3_bucket.logs.id
+
+  versioning_configuration {
+    status = "Enabled"
   }
 }
 
@@ -19,17 +40,8 @@ resource "aws_s3_bucket_object_lock_configuration" "logs" {
   rule {
     default_retention {
       mode = "COMPLIANCE"
-      days = var.log_retention_days
+      days = var.object_lock_days
     }
-  }
-}
-
-# Enable versioning (required for Object Lock)
-resource "aws_s3_bucket_versioning" "logs" {
-  bucket = aws_s3_bucket.logs.id
-
-  versioning_configuration {
-    status = "Enabled"
   }
 }
 
@@ -73,18 +85,18 @@ resource "aws_s3_bucket_lifecycle_configuration" "logs" {
       storage_class = "GLACIER"
     }
 
-    # Keep logs for 1 year total (Object Lock prevents deletion before retention)
+    # Keep logs for retention period (Object Lock prevents deletion before retention)
     expiration {
-      days = 365
+      days = var.retention_days * 2
     }
 
     noncurrent_version_expiration {
-      noncurrent_days = 30
+      noncurrent_days = var.retention_days
     }
   }
 }
 
-# Bucket policy: only allow writes from honeypot VPC
+# Bucket policy: enforce encryption and deny deletions
 resource "aws_s3_bucket_policy" "logs" {
   bucket = aws_s3_bucket.logs.id
 
@@ -92,11 +104,23 @@ resource "aws_s3_bucket_policy" "logs" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "DenyNonSSLAccess"
-        Effect = "Deny"
+        Sid       = "DenyUnencryptedUploads"
+        Effect    = "Deny"
         Principal = "*"
-        Action = "s3:*"
-        Resource = [
+        Action    = "s3:PutObject"
+        Resource  = "${aws_s3_bucket.logs.arn}/*"
+        Condition = {
+          StringNotEquals = {
+            "s3:x-amz-server-side-encryption" = "aws:kms"
+          }
+        }
+      },
+      {
+        Sid       = "DenyNonSSLAccess"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource  = [
           aws_s3_bucket.logs.arn,
           "${aws_s3_bucket.logs.arn}/*",
         ]
@@ -107,21 +131,49 @@ resource "aws_s3_bucket_policy" "logs" {
         }
       },
       {
-        Sid    = "DenyDeleteActions"
-        Effect = "Deny"
+        Sid       = "DenyDeleteObjectLock"
+        Effect    = "Deny"
         Principal = "*"
         Action = [
           "s3:DeleteObject",
           "s3:DeleteObjectVersion",
         ]
-        Resource = "${aws_s3_bucket.logs.arn}/*"
-        Condition = {
-          StringNotEquals = {
-            "aws:PrincipalArn" = "arn:aws:iam::root"
-          }
-        }
+        Resource  = "${aws_s3_bucket.logs.arn}/*"
       },
     ]
+  })
+}
+
+# Cross-Region Replication (optional)
+resource "aws_s3_bucket_replication_configuration" "logs" {
+  count  = var.enable_replication ? 1 : 0
+  bucket = aws_s3_bucket.logs.id
+  role   = aws_iam_role.replication[0].arn
+
+  rule {
+    id     = "replicate-all"
+    status = "Enabled"
+
+    destination {
+      bucket        = var.replication_bucket_arn
+      storage_class = "STANDARD_IA"
+    }
+  }
+
+  depends_on = [aws_s3_bucket_versioning.logs]
+}
+
+resource "aws_iam_role" "replication" {
+  count       = var.enable_replication ? 1 : 0
+  name_prefix = "honeyclaw-log-replication-"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "s3.amazonaws.com" }
+    }]
   })
 }
 
@@ -133,4 +185,13 @@ resource "aws_cloudwatch_log_group" "honeypot" {
   tags = {
     Name = "${var.name_prefix}-honeypot-logs"
   }
+}
+
+# --- Outputs ---
+output "bucket_name" {
+  value = aws_s3_bucket.logs.bucket
+}
+
+output "bucket_arn" {
+  value = aws_s3_bucket.logs.arn
 }

@@ -3,6 +3,14 @@
 # Creates a dedicated VPC with NO peering to production.
 # Egress is blocked except for log shipping to the SIEM endpoint.
 
+variable "name_prefix" { type = string }
+variable "environment" { type = string }
+variable "vpc_cidr" { type = string }
+variable "aws_region" { type = string }
+variable "siem_endpoint_ip" { type = string }
+variable "siem_endpoint_port" { type = number }
+variable "enable_flow_logs" { type = bool }
+
 data "aws_availability_zones" "available" {
   state = "available"
 }
@@ -13,7 +21,7 @@ locals {
   private_cidrs  = [for i, az in local.azs : cidrsubnet(var.vpc_cidr, 8, i + 100)]
 }
 
-# --- VPC ---
+# --- VPC (No peering to production) ---
 resource "aws_vpc" "honeypot" {
   cidr_block           = var.vpc_cidr
   enable_dns_support   = true
@@ -128,21 +136,21 @@ resource "aws_network_acl" "honeypot" {
     protocol   = "udp"
     rule_no    = 200
     action     = "allow"
-    cidr_block = cidrsubnet(var.vpc_cidr, 16, 0) # VPC DNS resolver
+    cidr_block = var.vpc_cidr
     from_port  = 53
     to_port    = 53
   }
 
   # Allow HTTPS outbound to SIEM endpoint only (if configured)
   dynamic "egress" {
-    for_each = var.siem_endpoint != "" ? [1] : []
+    for_each = var.siem_endpoint_ip != "" ? [1] : []
     content {
       protocol   = "tcp"
       rule_no    = 300
       action     = "allow"
-      cidr_block = "${split(":", var.siem_endpoint)[0]}/32"
-      from_port  = tonumber(split(":", var.siem_endpoint)[1])
-      to_port    = tonumber(split(":", var.siem_endpoint)[1])
+      cidr_block = "${var.siem_endpoint_ip}/32"
+      from_port  = var.siem_endpoint_port
+      to_port    = var.siem_endpoint_port
     }
   }
 
@@ -151,9 +159,19 @@ resource "aws_network_acl" "honeypot" {
     protocol   = "tcp"
     rule_no    = 400
     action     = "allow"
-    cidr_block = var.vpc_cidr
+    cidr_block = "0.0.0.0/0"
     from_port  = 443
     to_port    = 443
+  }
+
+  # Deny everything else
+  egress {
+    protocol   = -1
+    rule_no    = 900
+    action     = "deny"
+    cidr_block = "0.0.0.0/0"
+    from_port  = 0
+    to_port    = 0
   }
 
   tags = {
@@ -162,9 +180,9 @@ resource "aws_network_acl" "honeypot" {
 }
 
 # --- Security Groups ---
-resource "aws_security_group" "honeypot" {
-  name_prefix = "${var.name_prefix}-honeypot-"
-  description = "Honeypot inbound access - allows attacker connections"
+resource "aws_security_group" "ssh_honeypot" {
+  name_prefix = "${var.name_prefix}-ssh-honeypot-"
+  description = "SSH honeypot inbound access - allows attacker connections"
   vpc_id      = aws_vpc.honeypot.id
 
   # SSH honeypot
@@ -183,6 +201,56 @@ resource "aws_security_group" "honeypot" {
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+
+  ingress {
+    description = "Health check"
+    from_port   = 9090
+    to_port     = 9090
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr]
+  }
+
+  # Egress: only to S3 VPC endpoint and SIEM
+  egress {
+    description = "S3 VPC endpoint (log shipping)"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "DNS resolution"
+    from_port   = 53
+    to_port     = 53
+    protocol    = "udp"
+    cidr_blocks = [var.vpc_cidr]
+  }
+
+  dynamic "egress" {
+    for_each = var.siem_endpoint_ip != "" ? [1] : []
+    content {
+      description = "SIEM only"
+      from_port   = var.siem_endpoint_port
+      to_port     = var.siem_endpoint_port
+      protocol    = "tcp"
+      cidr_blocks = ["${var.siem_endpoint_ip}/32"]
+    }
+  }
+
+  tags = {
+    Name = "${var.name_prefix}-ssh-honeypot-sg"
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_security_group" "api_honeypot" {
+  name_prefix = "${var.name_prefix}-api-honeypot-"
+  description = "API honeypot inbound access"
+  vpc_id      = aws_vpc.honeypot.id
 
   # HTTP/HTTPS honeypot
   ingress {
@@ -210,6 +278,14 @@ resource "aws_security_group" "honeypot" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  ingress {
+    description = "Health check"
+    from_port   = 9090
+    to_port     = 9090
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr]
+  }
+
   # Enterprise simulation ports (RDP, WinRM, SMB, LDAP)
   ingress {
     description = "RDP honeypot"
@@ -235,17 +311,16 @@ resource "aws_security_group" "honeypot" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # Egress: only to S3 VPC endpoint and SIEM
   egress {
-    description = "S3 VPC endpoint (log shipping)"
+    description = "S3 endpoint"
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
-    cidr_blocks = [var.vpc_cidr]
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   egress {
-    description = "DNS resolution"
+    description = "DNS"
     from_port   = 53
     to_port     = 53
     protocol    = "udp"
@@ -253,7 +328,7 @@ resource "aws_security_group" "honeypot" {
   }
 
   tags = {
-    Name = "${var.name_prefix}-honeypot-sg"
+    Name = "${var.name_prefix}-api-honeypot-sg"
   }
 
   lifecycle {
@@ -284,7 +359,7 @@ resource "aws_vpc_endpoint" "logs" {
   subnet_ids          = aws_subnet.private[*].id
   private_dns_enabled = true
 
-  security_group_ids = [aws_security_group.honeypot.id]
+  security_group_ids = [aws_security_group.ssh_honeypot.id]
 
   tags = {
     Name = "${var.name_prefix}-logs-endpoint"
@@ -353,4 +428,25 @@ resource "aws_iam_role_policy" "flow_logs" {
       Resource = "*"
     }]
   })
+}
+
+# --- Outputs ---
+output "vpc_id" {
+  value = aws_vpc.honeypot.id
+}
+
+output "public_subnet_ids" {
+  value = aws_subnet.public[*].id
+}
+
+output "private_subnet_ids" {
+  value = aws_subnet.private[*].id
+}
+
+output "ssh_honeypot_sg_id" {
+  value = aws_security_group.ssh_honeypot.id
+}
+
+output "api_honeypot_sg_id" {
+  value = aws_security_group.api_honeypot.id
 }

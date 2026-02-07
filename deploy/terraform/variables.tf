@@ -1,3 +1,5 @@
+# HoneyClaw Infrastructure Variables
+
 variable "aws_region" {
   description = "AWS region for honeypot infrastructure"
   type        = string
@@ -20,6 +22,28 @@ variable "project_name" {
   type        = string
   default     = "honeyclaw"
 }
+
+# --- Networking ---
+
+variable "vpc_cidr" {
+  description = "CIDR block for honeypot VPC (isolated from production)"
+  type        = string
+  default     = "10.200.0.0/16"
+}
+
+variable "siem_endpoint" {
+  description = "SIEM endpoint IP:port for log shipping (only allowed egress)"
+  type        = string
+  default     = ""
+}
+
+variable "enable_flow_logs" {
+  description = "Enable VPC flow logs for forensic audit"
+  type        = bool
+  default     = true
+}
+
+# --- Honeypot ---
 
 variable "honeypot_templates" {
   description = "Honeypot templates to deploy"
@@ -51,23 +75,7 @@ variable "max_honeypots_per_template" {
   default     = 3
 }
 
-variable "vpc_cidr" {
-  description = "CIDR block for honeypot VPC (isolated from production)"
-  type        = string
-  default     = "10.200.0.0/16"
-}
-
-variable "siem_endpoint" {
-  description = "SIEM endpoint IP:port for log shipping (only allowed egress)"
-  type        = string
-  default     = ""
-}
-
-variable "alert_email" {
-  description = "Email address for deployment alerts"
-  type        = string
-  default     = ""
-}
+# --- Logging ---
 
 variable "log_retention_days" {
   description = "S3 Object Lock retention period in days"
@@ -75,10 +83,12 @@ variable "log_retention_days" {
   default     = 90
 }
 
-variable "enable_flow_logs" {
-  description = "Enable VPC flow logs for forensic audit"
-  type        = bool
-  default     = true
+# --- Alerting ---
+
+variable "alert_email" {
+  description = "Email address for deployment alerts"
+  type        = string
+  default     = ""
 }
 
 variable "ssh_key_name" {

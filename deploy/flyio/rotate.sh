@@ -93,6 +93,17 @@ export_session_data() {
     # Capture release history
     fly releases list -a "$app" --json 2>/dev/null > "$snapshot_path/releases.json" || true
 
+    # Take forensic snapshot from container
+    fly ssh console --app "$app" -C \
+        "tar czf /tmp/sessions-export.tar.gz /var/lib/honeyclaw/recordings/ 2>/dev/null || true" \
+        2>/dev/null || true
+
+    # Capture process list
+    fly ssh console --app "$app" -C "ps auxf" > "$snapshot_path/processes.txt" 2>/dev/null || true
+
+    # Capture network state
+    fly ssh console --app "$app" -C "ss -tlnp" > "$snapshot_path/network.txt" 2>/dev/null || true
+
     # Upload to S3 if configured
     if [ -n "$EXPORT_BUCKET" ]; then
         log_info "[$app] Uploading snapshot to $EXPORT_BUCKET..."
@@ -128,15 +139,17 @@ rotate_app() {
         fly machines destroy "$machine_id" -a "$app" --force 2>/dev/null || true
     done
 
-    # Step 3: Redeploy from latest image
+    # Step 3: Redeploy from latest image (blue-green)
     log_info "[$app] Redeploying from latest image..."
-    fly deploy -a "$app" --yes 2>/dev/null
+    fly deploy -a "$app" --strategy bluegreen --wait-timeout 120 --yes 2>/dev/null
 
     # Step 4: Health verification
     log_info "[$app] Verifying health..."
     local healthy=false
-    for i in $(seq 1 10); do
+    for i in $(seq 1 12); do
         sleep 5
+        
+        # Check machine status
         local status
         status=$(fly status -a "$app" --json 2>/dev/null | \
             python3 -c "
@@ -148,10 +161,14 @@ print('healthy' if started > 0 else 'waiting')
 " 2>/dev/null || echo "error")
 
         if [ "$status" = "healthy" ]; then
-            healthy=true
-            break
+            # Also check HTTP health endpoint
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "https://${app}.fly.dev:9090/health" 2>/dev/null || echo "000")
+            if [ "$HTTP_CODE" = "200" ]; then
+                healthy=true
+                break
+            fi
         fi
-        log_info "[$app] Health check $i/10: $status"
+        log_info "[$app] Health check $i/12: $status"
     done
 
     if [ "$healthy" = "true" ]; then

@@ -7,6 +7,10 @@
 nameOverride: ""
 fullnameOverride: ""
 
+global:
+  environment: production
+  honeypotId: honeyclaw
+
 # -- Honeypot template to deploy
 template: basic-ssh
 # Options: basic-ssh, fake-api, enterprise-sim
@@ -42,6 +46,13 @@ securityContext:
   capabilities:
     drop:
       - ALL
+
+# Pod security settings
+podSecurity:
+  runAsNonRoot: false
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  pidsLimit: 100
 
 # -- Service configuration
 service:
@@ -84,21 +95,13 @@ persistence:
   accessModes:
     - ReadWriteOnce
 
-# -- Liveness and readiness probes
-livenessProbe:
-  tcpSocket:
-    port: 8022
+# Health checks
+healthCheck:
+  port: 9090
+  path: /health
   initialDelaySeconds: 30
-  periodSeconds: 10
+  periodSeconds: 30
   timeoutSeconds: 5
-  failureThreshold: 3
-
-readinessProbe:
-  tcpSocket:
-    port: 8022
-  initialDelaySeconds: 10
-  periodSeconds: 5
-  timeoutSeconds: 3
   failureThreshold: 3
 
 # -- Network policy (strict egress control)
@@ -108,6 +111,14 @@ networkPolicy:
   egressCIDRs: []
   # Allow egress to these DNS names
   egressDNS: true
+  # Custom egress rules
+  egressRules:
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 443
+          protocol: TCP
 
 # -- Horizontal Pod Autoscaler
 autoscaling:
@@ -115,12 +126,14 @@ autoscaling:
   minReplicas: 1
   maxReplicas: 5
   targetCPUUtilization: 70
+  targetCPUUtilizationPercentage: 70
 
 # -- Pod rotation CronJob (automated rebuild cycle)
 rotation:
   enabled: true
   # Cron schedule: every 24 hours at 3 AM UTC
   schedule: "0 3 * * *"
+  intervalHours: 24
   # How many rotation history records to keep
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
@@ -134,3 +147,15 @@ nodeSelector: {}
 
 # -- Tolerations
 tolerations: []
+
+# Monitoring
+monitoring:
+  enabled: false
+  serviceMonitor: false
+
+# Logging
+logging:
+  s3Bucket: ""
+  s3Prefix: "logs/"
+  siemEndpoint: ""
+  siemPort: 514

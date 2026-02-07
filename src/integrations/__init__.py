@@ -3,10 +3,18 @@
 Honeyclaw SIEM/SOAR Integrations
 
 First-class connectors for enterprise security stacks:
+
+SIEM:
 - Splunk (HEC)
 - Elasticsearch / Elastic SIEM
 - Azure Sentinel (Log Analytics)
 - Generic Syslog (CEF/LEEF for QRadar, ArcSight, etc.)
+
+SOAR:
+- TheHive / Cortex
+- Splunk SOAR (Phantom)
+- Palo Alto XSOAR (Demisto)
+- Generic SOAR webhook
 """
 
 from .base import SIEMConnector, SIEMConfig, HoneypotEvent
