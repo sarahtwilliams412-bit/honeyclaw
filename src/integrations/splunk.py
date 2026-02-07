@@ -155,6 +155,7 @@ class SplunkHECConnector(SIEMConnector):
             "tags": event.tags,
             "mitre_attack_tactics": event.mitre_tactics,
             "mitre_attack_techniques": event.mitre_techniques,
+            "mitre_attack_technique_names": event.mitre_technique_names,
             
             # Geo
             "src_country": event.geo_country,
