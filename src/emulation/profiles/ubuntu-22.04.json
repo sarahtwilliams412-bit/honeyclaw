@@ -1,0 +1,36 @@
+{
+  "os_name": "Ubuntu",
+  "os_version": "22.04.3 LTS (Jammy Jellyfish)",
+  "kernel": "5.15.0-91-generic",
+  "arch": "x86_64",
+  "hostname": "server-01",
+  "os_release": "PRETTY_NAME=\"Ubuntu 22.04.3 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"22.04\"\nVERSION=\"22.04.3 LTS (Jammy Jellyfish)\"\nVERSION_CODENAME=jammy\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=jammy\n",
+  "users": [
+    {
+      "name": "admin",
+      "home": "/home/admin",
+      "shell": "/bin/bash",
+      "gecos": "System Administrator",
+      "has_aws": true
+    },
+    {
+      "name": "deploy",
+      "home": "/home/deploy",
+      "shell": "/bin/bash",
+      "gecos": "Deploy User"
+    },
+    {
+      "name": "www-data",
+      "home": "/var/www",
+      "shell": "/usr/sbin/nologin",
+      "gecos": "Web Server"
+    }
+  ],
+  "extra_binaries": [
+    "apt-get", "dpkg-query", "snap", "lsb_release",
+    "timedatectl", "journalctl", "networkctl",
+    "nginx", "mysql", "node", "npm"
+  ],
+  "ssh_banner": "SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6",
+  "package_manager": "apt"
+}

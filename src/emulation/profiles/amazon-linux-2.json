@@ -1,0 +1,30 @@
+{
+  "os_name": "Amazon Linux",
+  "os_version": "2",
+  "kernel": "5.10.205-195.807.amzn2.x86_64",
+  "arch": "x86_64",
+  "hostname": "ip-10-0-1-42",
+  "os_release": "NAME=\"Amazon Linux\"\nVERSION=\"2\"\nID=\"amzn\"\nID_LIKE=\"centos rhel fedora\"\nVERSION_ID=\"2\"\nPRETTY_NAME=\"Amazon Linux 2\"\nANSI_COLOR=\"0;33\"\nCPE_NAME=\"cpe:2.3:o:amazon:amazon_linux:2\"\nHOME_URL=\"https://amazonlinux.com/\"\n",
+  "users": [
+    {
+      "name": "ec2-user",
+      "home": "/home/ec2-user",
+      "shell": "/bin/bash",
+      "gecos": "EC2 Default User",
+      "has_aws": true
+    },
+    {
+      "name": "ssm-user",
+      "home": "/home/ssm-user",
+      "shell": "/bin/bash",
+      "gecos": "SSM Default User"
+    }
+  ],
+  "extra_binaries": [
+    "yum", "rpm", "amazon-ssm-agent",
+    "aws", "imds-utils", "journalctl",
+    "timedatectl", "docker"
+  ],
+  "ssh_banner": "SSH-2.0-OpenSSH_7.4",
+  "package_manager": "yum"
+}

@@ -1,0 +1,30 @@
+{
+  "os_name": "CentOS Linux",
+  "os_version": "7 (Core)",
+  "kernel": "3.10.0-1160.105.1.el7.x86_64",
+  "arch": "x86_64",
+  "hostname": "prod-web-01",
+  "os_release": "NAME=\"CentOS Linux\"\nVERSION=\"7 (Core)\"\nID=\"centos\"\nID_LIKE=\"rhel fedora\"\nVERSION_ID=\"7\"\nPRETTY_NAME=\"CentOS Linux 7 (Core)\"\nANSI_COLOR=\"0;31\"\nCPE_NAME=\"cpe:/o:centos:centos:7\"\nHOME_URL=\"https://www.centos.org/\"\nBUG_REPORT_URL=\"https://bugs.centos.org/\"\nCENTOS_MANTISBT_PROJECT=\"CentOS-7\"\n",
+  "users": [
+    {
+      "name": "admin",
+      "home": "/home/admin",
+      "shell": "/bin/bash",
+      "gecos": "System Administrator",
+      "has_aws": true
+    },
+    {
+      "name": "jenkins",
+      "home": "/var/lib/jenkins",
+      "shell": "/bin/bash",
+      "gecos": "Jenkins CI"
+    }
+  ],
+  "extra_binaries": [
+    "yum", "rpm", "firewall-cmd", "sestatus",
+    "getenforce", "journalctl", "timedatectl",
+    "httpd", "php"
+  ],
+  "ssh_banner": "SSH-2.0-OpenSSH_7.4",
+  "package_manager": "yum"
+}

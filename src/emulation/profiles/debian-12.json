@@ -1,0 +1,35 @@
+{
+  "os_name": "Debian GNU/Linux",
+  "os_version": "12 (bookworm)",
+  "kernel": "6.1.0-17-amd64",
+  "arch": "x86_64",
+  "hostname": "db-primary",
+  "os_release": "PRETTY_NAME=\"Debian GNU/Linux 12 (bookworm)\"\nNAME=\"Debian GNU/Linux\"\nVERSION_ID=\"12\"\nVERSION=\"12 (bookworm)\"\nVERSION_CODENAME=bookworm\nID=debian\nHOME_URL=\"https://www.debian.org/\"\nSUPPORT_URL=\"https://www.debian.org/support\"\nBUG_REPORT_URL=\"https://bugs.debian.org/\"\n",
+  "users": [
+    {
+      "name": "postgres",
+      "home": "/var/lib/postgresql",
+      "shell": "/bin/bash",
+      "gecos": "PostgreSQL administrator"
+    },
+    {
+      "name": "admin",
+      "home": "/home/admin",
+      "shell": "/bin/bash",
+      "gecos": "System Administrator"
+    },
+    {
+      "name": "backup",
+      "home": "/home/backup",
+      "shell": "/bin/bash",
+      "gecos": "Backup Operator"
+    }
+  ],
+  "extra_binaries": [
+    "apt-get", "dpkg-query", "journalctl",
+    "timedatectl", "networkctl",
+    "psql", "pg_dump", "pg_restore"
+  ],
+  "ssh_banner": "SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u2",
+  "package_manager": "apt"
+}
