@@ -55,6 +55,18 @@ except ImportError:
     def send_alert(event, event_type):
         pass  # No-op if alerting not available
 
+# Enhanced logging: correlation IDs + geolocation (optional - fails gracefully)
+try:
+    from src.utils.correlation import get_correlation_id
+    from src.utils.geoip import get_geo_fields
+    ENHANCED_LOGGING_ENABLED = True
+except ImportError:
+    ENHANCED_LOGGING_ENABLED = False
+    def get_correlation_id(ip):
+        return None
+    def get_geo_fields(ip):
+        return {}
+
 # MITRE ATT&CK enrichment (optional)
 try:
     from src.analysis.mitre_mapper import enrich_event as mitre_enrich
@@ -296,7 +308,7 @@ class HoneypotServer(asyncssh.SSHServer):
 
 
 def log_event(event_type, data):
-    """Log event to file, stdout, and alert pipeline"""
+    """Log event to file, stdout, and alert pipeline (with correlation + geo enrichment)"""
     # Sanitize event type
     safe_event_type = sanitize_for_log(event_type, max_length=64)
 
@@ -305,6 +317,15 @@ def log_event(event_type, data):
         'event': safe_event_type,
         **data
     }
+
+    # Enrich with correlation ID and geolocation
+    source_ip = data.get('ip')
+    if source_ip and ENHANCED_LOGGING_ENABLED:
+        corr_id = get_correlation_id(source_ip)
+        if corr_id:
+            event['correlation_id'] = corr_id
+        geo = get_geo_fields(source_ip)
+        event.update(geo)
 
     # Enrich with MITRE ATT&CK mappings
     if MITRE_ENABLED:

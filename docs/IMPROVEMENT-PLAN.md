@@ -317,7 +317,7 @@ Create `src/analysis/mitre_mapper.py`:
 
 ---
 
-### 2.4 Enhanced Logging: Correlation & Immutability
+### 2.4 Enhanced Logging: Correlation & Immutability ✅ IMPLEMENTED
 
 **Gap:** Events lack correlation IDs for tracking multi-step attacks. S3 storage doesn't use Object Lock for tamper-proof retention. Geolocation isn't consistently applied at log time.
 
@@ -775,7 +775,7 @@ Create `tests/security/`:
 | 2.1 Stateful shell emulation & fake filesystem | P1 | High | None |
 | 2.2 AI adaptive deception (sophistication classifier) | P1 | High | 2.1 |
 | 2.3 MITRE ATT&CK full event mapping | P1 | Medium | None |
-| 2.4 Correlation IDs + log immutability | P1 | Medium | None |
+| 2.4 Correlation IDs + log immutability | P1 | Medium | ✅ DONE |
 
 ### Phase 3: Anti-Fingerprinting (Weeks 5-6)
 | Task | Priority | Effort | Dependencies |
