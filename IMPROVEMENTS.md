@@ -35,7 +35,7 @@ See [docs/IMPROVEMENT-PLAN.md](docs/IMPROVEMENT-PLAN.md) for the full implementa
 |---|-------------|--------|--------|----------|-------------|
 | 11 | Health Monitoring & Compromise Detection | 🔥🔥🔥 | Medium | **P0** | CRITICAL |
 | 12 | Infrastructure-as-Code (Terraform/Helm) | 🔥🔥🔥 | High | **P0** | HIGH |
-| 13 | Network Isolation Enforcement (AppArmor/Seccomp) | 🔥🔥🔥 | Medium | **P0** | HIGH |
+| 13 | Network Isolation Enforcement (AppArmor/Seccomp) | 🔥🔥🔥 | Medium | ✅ DONE | HIGH |
 | 14 | Stateful Shell Emulation & Fake Filesystem | 🔥🔥🔥 | High | **P1** | HIGH |
 | 15 | AI Adaptive Deception (Sophistication Classifier) | 🔥🔥🔥 | High | **P1** | HIGH |
 | 16 | MITRE ATT&CK Full Event Mapping | 🔥🔥 | Medium | **P1** | MEDIUM |
@@ -379,7 +379,7 @@ auto_report:
 **Phase 1 - Critical Security (Weeks 1-2):**
 - [ ] #11 Health monitoring & compromise detection
 - [ ] #12 Infrastructure-as-Code (Terraform + Helm)
-- [ ] #13 Network isolation enforcement (AppArmor, Seccomp)
+- [x] #13 Network isolation enforcement (AppArmor, Seccomp) ✅ DONE
 
 **Phase 2 - Enhanced Intelligence (Weeks 3-4):**
 - [ ] #14 Stateful shell emulation & fake filesystem
@@ -422,4 +422,4 @@ cd honeyclaw
 
 ---
 
-*Last updated: 2026-02-07 — Production hardening roadmap added (see [docs/IMPROVEMENT-PLAN.md](docs/IMPROVEMENT-PLAN.md))*
+*Last updated: 2026-02-07 — #13 Network Isolation Enforcement implemented (AppArmor, Seccomp, hardened Docker Compose)*

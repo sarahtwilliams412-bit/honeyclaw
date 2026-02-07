@@ -16,12 +16,18 @@ NETWORK_NAME="${HONEYCLAW_NETWORK:-honeyclaw-net}"
 LOG_DIR="${HONEYCLAW_LOG_DIR:-/var/log/honeyclaw}"
 S3_BUCKET="${HONEYCLAW_S3_BUCKET:-}"
 S3_ENDPOINT="${HONEYCLAW_S3_ENDPOINT:-https://s3.amazonaws.com}"
+DEPLOY_DIR="${PROJECT_ROOT}/deploy"
 
 # SIEM Integration
 SIEM_CONFIG="${HONEYCLAW_SIEM_CONFIG:-}"
 SIEM_PROVIDER="${HONEYCLAW_SIEM_PROVIDER:-}"
 SIEM_ENDPOINT="${HONEYCLAW_SIEM_ENDPOINT:-}"
 SIEM_TOKEN="${HONEYCLAW_SIEM_TOKEN:-}"
+
+# Security profiles
+APPARMOR_ENABLED="${HONEYCLAW_APPARMOR:-true}"
+SECCOMP_ENABLED="${HONEYCLAW_SECCOMP:-true}"
+ISOLATION_STRICT="${HONEYCLAW_STRICT_ISOLATION:-true}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -45,6 +51,9 @@ DETACH=true
 FORCE=false
 SIEM_ENABLED=false
 SIEM_ARG=""
+NO_APPARMOR=false
+NO_SECCOMP=false
+NO_ISOLATION=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -85,6 +94,18 @@ while [[ $# -gt 0 ]]; do
             fi
             shift
             ;;
+        --no-apparmor)
+            NO_APPARMOR=true
+            shift
+            ;;
+        --no-seccomp)
+            NO_SECCOMP=true
+            shift
+            ;;
+        --no-isolation)
+            NO_ISOLATION=true
+            shift
+            ;;
         --help|-h)
             cat <<EOF
 Honey Claw - Honeypot Deployment
@@ -100,6 +121,9 @@ Options:
       --no-detach         Run in foreground
   -f, --force             Remove existing honeypot with same name
       --siem [config]     Enable SIEM integration (config file or provider name)
+      --no-apparmor       Disable AppArmor profile (not recommended)
+      --no-seccomp        Disable seccomp profile (not recommended)
+      --no-isolation      Disable strict network isolation
   -h, --help              Show this help message
 
 Environment Variables:
@@ -110,6 +134,9 @@ Environment Variables:
   HONEYCLAW_SIEM_PROVIDER SIEM provider (splunk, elastic, sentinel, syslog)
   HONEYCLAW_SIEM_ENDPOINT SIEM endpoint URL
   HONEYCLAW_SIEM_TOKEN    SIEM authentication token
+  HONEYCLAW_APPARMOR      Enable AppArmor profiles (default: true)
+  HONEYCLAW_SECCOMP       Enable seccomp profiles (default: true)
+  HONEYCLAW_STRICT_ISOLATION  Enable strict network isolation (default: true)
 
 Examples:
   # Deploy SSH honeypot on port 2222
@@ -174,10 +201,25 @@ fi
 # Ensure network exists
 if ! docker network ls --format '{{.Name}}' | grep -q "^${NETWORK_NAME}$"; then
     log_info "Creating Docker network: $NETWORK_NAME"
-    docker network create "$NETWORK_NAME" \
-        --driver bridge \
-        --opt com.docker.network.bridge.enable_icc=false \
-        --opt com.docker.network.bridge.enable_ip_masquerade=false
+    NETWORK_OPTS=(
+        --driver bridge
+        --opt com.docker.network.bridge.enable_icc=false
+    )
+    if [[ "$NO_ISOLATION" != true && "$ISOLATION_STRICT" == true ]]; then
+        NETWORK_OPTS+=(
+            --opt com.docker.network.bridge.enable_ip_masquerade=false
+            --internal
+        )
+        log_info "Strict network isolation enabled (no egress, no ICC)"
+    else
+        NETWORK_OPTS+=(
+            --opt com.docker.network.bridge.enable_ip_masquerade=false
+        )
+        if [[ "$NO_ISOLATION" == true ]]; then
+            log_warn "Strict isolation disabled via --no-isolation flag"
+        fi
+    fi
+    docker network create "$NETWORK_NAME" "${NETWORK_OPTS[@]}"
     log_ok "Network created"
 fi
 
@@ -283,6 +325,38 @@ if [[ "$DETACH" == true ]]; then
     DETACH_FLAG="-d"
 fi
 
+# Template-specific resource limits
+case "$TEMPLATE" in
+    basic-ssh)
+        MEMORY_LIMIT="64m"
+        CPU_LIMIT="0.25"
+        PIDS_LIMIT="20"
+        SECCOMP_PROFILE="honeyclaw-ssh.json"
+        APPARMOR_PROFILE="honeyclaw-ssh"
+        ;;
+    fake-api)
+        MEMORY_LIMIT="128m"
+        CPU_LIMIT="0.5"
+        PIDS_LIMIT="30"
+        SECCOMP_PROFILE="honeyclaw-default.json"
+        APPARMOR_PROFILE="honeyclaw-api"
+        ;;
+    enterprise-sim)
+        MEMORY_LIMIT="512m"
+        CPU_LIMIT="0.5"
+        PIDS_LIMIT="100"
+        SECCOMP_PROFILE="honeyclaw-enterprise.json"
+        APPARMOR_PROFILE="honeyclaw-enterprise"
+        ;;
+    *)
+        MEMORY_LIMIT="128m"
+        CPU_LIMIT="0.5"
+        PIDS_LIMIT="50"
+        SECCOMP_PROFILE="honeyclaw-default.json"
+        APPARMOR_PROFILE=""
+        ;;
+esac
+
 # Build docker run command
 DOCKER_CMD=(
     docker run
@@ -293,9 +367,10 @@ DOCKER_CMD=(
     --read-only
     --security-opt no-new-privileges:true
     --cap-drop ALL
-    --memory 512m
-    --cpus 0.5
-    --pids-limit 50
+    --memory "$MEMORY_LIMIT"
+    --cpus "$CPU_LIMIT"
+    --pids-limit "$PIDS_LIMIT"
+    --tmpfs /tmp:noexec,nosuid,size=32m
     -v "${HONEYPOT_LOG_DIR}:/var/log/honeypot:rw"
     -e "HONEYPOT_ID=${NAME}"
     -e "HONEYPOT_TEMPLATE=${TEMPLATE}"
@@ -308,7 +383,47 @@ DOCKER_CMD=(
     --label "honeyclaw.name=${NAME}"
     --label "honeyclaw.template=${TEMPLATE}"
     --label "honeyclaw.deployed=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    --label "honeyclaw.isolation=strict"
 )
+
+# Enterprise-sim needs specific capabilities for multi-service operation
+if [[ "$TEMPLATE" == "enterprise-sim" ]]; then
+    DOCKER_CMD+=(
+        --cap-add NET_BIND_SERVICE
+        --cap-add CHOWN
+        --cap-add SETGID
+        --cap-add SETUID
+        --cap-add DAC_OVERRIDE
+        --tmpfs /run:noexec,nosuid,size=16m
+        --tmpfs /var/run:noexec,nosuid,size=16m
+    )
+fi
+
+# AppArmor profile
+if [[ "$NO_APPARMOR" != true && "$APPARMOR_ENABLED" == true && -n "$APPARMOR_PROFILE" ]]; then
+    PROFILE_PATH="${DEPLOY_DIR}/apparmor/${APPARMOR_PROFILE}.profile"
+    if [[ -f "$PROFILE_PATH" ]]; then
+        DOCKER_CMD+=(--security-opt "apparmor=${APPARMOR_PROFILE}")
+        log_info "AppArmor profile: $APPARMOR_PROFILE"
+    else
+        log_warn "AppArmor profile not found at $PROFILE_PATH - running without AppArmor"
+    fi
+elif [[ "$NO_APPARMOR" == true ]]; then
+    log_warn "AppArmor disabled via --no-apparmor flag"
+fi
+
+# Seccomp profile
+if [[ "$NO_SECCOMP" != true && "$SECCOMP_ENABLED" == true ]]; then
+    SECCOMP_PATH="${DEPLOY_DIR}/seccomp/${SECCOMP_PROFILE}"
+    if [[ -f "$SECCOMP_PATH" ]]; then
+        DOCKER_CMD+=(--security-opt "seccomp=${SECCOMP_PATH}")
+        log_info "Seccomp profile: $SECCOMP_PROFILE"
+    else
+        log_warn "Seccomp profile not found at $SECCOMP_PATH - running with Docker default seccomp"
+    fi
+elif [[ "$NO_SECCOMP" == true ]]; then
+    log_warn "Seccomp disabled via --no-seccomp flag"
+fi
 
 # Add port mappings
 if [[ -n "$PORT_ARGS" ]]; then
@@ -333,6 +448,10 @@ if [[ "$DETACH" == true ]]; then
     echo "  Template:       $TEMPLATE"
     echo "  Network:        $NETWORK_NAME"
     echo "  Logs:           $HONEYPOT_LOG_DIR"
+    echo "  Resources:      CPU=${CPU_LIMIT}, Mem=${MEMORY_LIMIT}, PIDs=${PIDS_LIMIT}"
+    echo "  AppArmor:       ${APPARMOR_PROFILE:-none}"
+    echo "  Seccomp:        ${SECCOMP_PROFILE}"
+    echo "  Isolation:      $([ "$NO_ISOLATION" != true ] && echo 'strict' || echo 'standard')"
     echo ""
     
     # Show port mappings
