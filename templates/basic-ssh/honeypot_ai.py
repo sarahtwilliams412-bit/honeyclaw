@@ -1,27 +1,32 @@
 #!/usr/bin/env python3
 """
 AI-Enhanced SSH Honeypot - Interactive shell with LLM deception
-Version: 2.0.0
+Version: 2.1.0
 
 This honeypot accepts configured credentials and provides an interactive
 shell session powered by AI to engage attackers and extract intelligence.
+When AI is disabled, a stateful shell emulator with fake filesystem
+provides realistic responses to increase attacker dwell time.
 
 Environment variables:
   PORT                       - Listen port (default: 8022)
   LOG_PATH                   - Log file path (default: /var/log/honeypot/ssh.json)
   SSH_BANNER                 - SSH version banner (default: OpenSSH_8.9p1 Ubuntu-3ubuntu0.6)
-  
+
 AI Deception:
   AI_DECEPTION_ENABLED       - Enable AI responses (default: false)
   AI_DECEPTION_PERSONALITY   - Personality profile (naive_intern, paranoid_admin, etc.)
   AI_DECEPTION_MODEL         - LLM model (default: claude-sonnet-4-20250514)
   ANTHROPIC_API_KEY          - Required for AI mode
-  
+
+Shell Emulation:
+  EMULATION_PROFILE          - OS profile for fake filesystem (default: ubuntu-22.04)
+
 Authentication:
   HONEYPOT_ALLOW_ANY_AUTH    - Accept any credentials (default: false)
   HONEYPOT_USERS             - Comma-separated user:pass pairs (e.g., "root:admin,test:test")
   HONEYPOT_USERS_FILE        - Path to file with user:pass per line
-  
+
 Rate limits:
   RATELIMIT_ENABLED          - Enable rate limiting (default: true)
   RATELIMIT_CONN_PER_MIN     - Max connections per IP per minute (default: 10)
@@ -63,6 +68,16 @@ try:
 except ImportError:
     AI_AVAILABLE = False
     print("[WARN] AI deception module not available", flush=True)
+
+# Shell emulation layer
+try:
+    from src.emulation.filesystem import FakeFilesystem, load_profile
+    from src.emulation.shell import ShellEmulator
+    from src.emulation.timing import TimingSimulator
+    EMULATION_AVAILABLE = True
+except ImportError:
+    EMULATION_AVAILABLE = False
+    print("[WARN] Shell emulation module not available, using static responses", flush=True)
 
 
 # =============================================================================
@@ -129,6 +144,7 @@ SSH_BANNER = os.environ.get("SSH_BANNER", "OpenSSH_8.9p1 Ubuntu-3ubuntu0.6")
 ALLOWED_CREDS = load_allowed_credentials()
 AI_ENABLED = os.environ.get("AI_DECEPTION_ENABLED", "false").lower() == "true"
 AI_PERSONALITY = os.environ.get("AI_DECEPTION_PERSONALITY", "naive_intern")
+EMULATION_PROFILE = os.environ.get("EMULATION_PROFILE", "ubuntu-22.04")
 
 
 # =============================================================================
@@ -414,69 +430,131 @@ class HoneypotProcess(asyncssh.SSHServerProcess):
         self._process.exit(exit_code)
     
     async def _run_basic_shell(self, stdin, stdout, stderr, client_ip) -> int:
-        """Basic shell without AI (for testing or when AI is disabled)"""
-        hostname = "server-01"
-        user = "root"
-        
+        """Emulation-backed shell with stateful filesystem and realistic responses."""
+        username = self._server._authenticated_user or "root"
+
+        if EMULATION_AVAILABLE:
+            shell, timer = self._init_emulation(client_ip, username)
+            hostname = shell.hostname
+        else:
+            shell = None
+            timer = None
+            hostname = "server-01"
+
         stdout.write(f"""Welcome to Ubuntu 22.04.3 LTS ({hostname})
 
 Last login: {datetime.now().strftime('%a %b %d %H:%M:%S %Y')} from 10.0.0.1
 """)
-        stdout.write(f"{user}@{hostname}:~$ ")
-        
+        prompt = shell.prompt if shell else f"{username}@{hostname}:~$ "
+        stdout.write(prompt)
+
         buffer = ""
         command_count = 0
-        start_time = time.time()
-        
+
         while True:
             try:
                 data = await asyncio.wait_for(stdin.read(1024), timeout=300)
                 if not data:
                     break
-                
+
                 buffer += data
-                
+
                 while '\n' in buffer or '\r' in buffer:
                     if '\n' in buffer:
                         line, buffer = buffer.split('\n', 1)
                     else:
                         line, buffer = buffer.split('\r', 1)
-                    
+
                     line = line.strip()
-                    
+
                     if not line:
-                        stdout.write(f"{user}@{hostname}:~$ ")
+                        prompt = shell.prompt if shell else f"{username}@{hostname}:~$ "
+                        stdout.write(prompt)
                         continue
-                    
+
                     if line.lower() in ('exit', 'logout', 'quit'):
                         stdout.write("logout\n")
                         return 0
-                    
+
                     command_count += 1
                     log_event('command', {
                         'ip': client_ip,
                         'command': sanitize_for_log(line, max_length=1024),
-                        'ai_mode': False
+                        'ai_mode': False,
+                        'emulation': shell is not None,
                     })
-                    
-                    # Basic static responses
-                    response = self._get_static_response(line)
-                    stdout.write(response + "\n")
-                    stdout.write(f"{user}@{hostname}:~$ ")
-                    
+
+                    if shell:
+                        response, exit_code = shell.execute(line)
+                        if timer:
+                            await timer.delay_for(
+                                command=line,
+                                output_size=len(response),
+                            )
+                    else:
+                        response = self._get_static_response(line)
+
+                    if response:
+                        stdout.write(response + "\n")
+                    prompt = shell.prompt if shell else f"{username}@{hostname}:~$ "
+                    stdout.write(prompt)
+
             except asyncio.TimeoutError:
                 stdout.write("\nSession timed out.\n")
                 break
             except Exception as e:
-                print(f"[ERROR] Basic shell error: {e}", flush=True)
+                print(f"[ERROR] Shell error: {e}", flush=True)
                 break
-        
+
         return 0
-    
-    def _get_static_response(self, command: str) -> str:
-        """Generate basic static responses"""
+
+    def _init_emulation(self, client_ip: str, username: str):
+        """Initialize emulation layer for a session."""
+        profile = load_profile(EMULATION_PROFILE)
+        hostname = profile.get("hostname", "server-01")
+        fs = FakeFilesystem(profile)
+
+        # Add canary files
+        fs.add_canary("/root/.ssh/id_rsa",
+                      "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+                      "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUA...EXAMPLE...\n"
+                      "-----END OPENSSH PRIVATE KEY-----\n",
+                      token_id="ssh_key_root")
+        fs.add_canary("/root/.aws/credentials",
+                      "[default]\naws_access_key_id = AKIAIOSFODNN7EXAMPLE\n"
+                      "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n",
+                      token_id="aws_creds_root")
+
+        uid = 0 if username == "root" else 1000
+        home = "/root" if username == "root" else f"/home/{username}"
+
+        def on_command(cmd, cwd, user):
+            pass  # Already logged by the caller
+
+        def on_canary(path, token_id):
+            log_event('canary_triggered', {
+                'ip': client_ip,
+                'path': path,
+                'token_id': token_id,
+                'username': username,
+            })
+
+        shell = ShellEmulator(
+            filesystem=fs,
+            username=username,
+            hostname=hostname,
+            uid=uid,
+            gid=uid,
+            home=home,
+            on_canary=on_canary,
+        )
+        timer = TimingSimulator()
+        return shell, timer
+
+    @staticmethod
+    def _get_static_response(command: str) -> str:
+        """Fallback static responses when emulation is not available."""
         cmd = command.split()[0] if command.split() else ""
-        
         responses = {
             "whoami": "root",
             "id": "uid=0(root) gid=0(root) groups=0(root)",
@@ -486,13 +564,11 @@ Last login: {datetime.now().strftime('%a %b %d %H:%M:%S %Y')} from 10.0.0.1
             "ls": "Desktop  Documents  Downloads  .bashrc",
             "uptime": " 14:32:17 up 47 days,  2 users,  load average: 0.08, 0.12, 0.09",
         }
-        
         if cmd in responses:
             return responses[cmd]
         elif "cat" in command and "/etc/passwd" in command:
             return "root:x:0:0:root:/root:/bin/bash\nwww-data:x:33:33:www-data:/var/www:/usr/sbin/nologin"
-        else:
-            return f"bash: {cmd}: command not found"
+        return f"bash: {cmd}: command not found"
 
 
 def process_factory(process):
@@ -516,17 +592,20 @@ async def start_server():
         cred_mode = "any" if "*" in ALLOWED_CREDS else f"{len(ALLOWED_CREDS)} configured"
         
         log_event('startup', {
-            'port': PORT, 
-            'version': '2.0.0',
+            'port': PORT,
+            'version': '2.1.0',
             'rate_limiting': rate_limiter.enabled,
             'ai_enabled': AI_ENABLED and AI_AVAILABLE,
             'ai_personality': AI_PERSONALITY if AI_ENABLED else None,
+            'emulation_available': EMULATION_AVAILABLE,
+            'emulation_profile': EMULATION_PROFILE if EMULATION_AVAILABLE else None,
             'credentials_mode': cred_mode,
             'ssh_banner': SSH_BANNER
         })
         
         print(f"[INFO] SSH AI Honeypot starting on port {PORT}", flush=True)
         print(f"[INFO] AI Deception: {'ENABLED (' + AI_PERSONALITY + ')' if AI_ENABLED and AI_AVAILABLE else 'DISABLED'}", flush=True)
+        print(f"[INFO] Shell Emulation: {'ENABLED (' + EMULATION_PROFILE + ')' if EMULATION_AVAILABLE else 'DISABLED (static fallback)'}", flush=True)
         print(f"[INFO] Credentials: {cred_mode}", flush=True)
         
         server = await asyncssh.create_server(

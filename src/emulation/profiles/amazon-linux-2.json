@@ -1,12 +1,16 @@
 {
   "os": "Amazon Linux",
+  "os_name": "Amazon Linux",
   "version": "2",
+  "os_version": "2",
   "codename": "Karoo",
-  "kernel": "5.10.205-195.804.amzn2.x86_64",
+  "kernel": "5.10.205-195.807.amzn2.x86_64",
   "arch": "x86_64",
-  "hostname": "ip-10-0-0-40",
+  "hostname": "ip-10-0-1-42",
+  "os_release": "NAME=\"Amazon Linux\"\nVERSION=\"2\"\nID=\"amzn\"\nID_LIKE=\"centos rhel fedora\"\nVERSION_ID=\"2\"\nPRETTY_NAME=\"Amazon Linux 2\"\nANSI_COLOR=\"0;33\"\nCPE_NAME=\"cpe:2.3:o:amazon:amazon_linux:2\"\nHOME_URL=\"https://amazonlinux.com/\"\n",
   "ssh_banner": "SSH-2.0-OpenSSH_7.4",
   "motd": "       __|  __|_  )\n       _|  (     /   Amazon Linux 2 AMI\n      ___|\\___|\\___|",
+  "package_manager": "yum",
   "packages": {
     "openssh-server": "7.4p1-22.amzn2.0.4",
     "httpd": "2.4.58-1.amzn2",
@@ -16,9 +20,26 @@
   },
   "services": ["sshd", "httpd", "docker", "crond", "amazon-ssm-agent"],
   "users": [
-    {"name": "root", "uid": 0, "shell": "/bin/bash"},
-    {"name": "ec2-user", "uid": 1000, "shell": "/bin/bash"},
-    {"name": "apache", "uid": 48, "shell": "/sbin/nologin"}
+    {
+      "name": "ec2-user",
+      "uid": 1000,
+      "home": "/home/ec2-user",
+      "shell": "/bin/bash",
+      "gecos": "EC2 Default User",
+      "has_aws": true
+    },
+    {
+      "name": "ssm-user",
+      "uid": 1001,
+      "home": "/home/ssm-user",
+      "shell": "/bin/bash",
+      "gecos": "SSM Default User"
+    }
+  ],
+  "extra_binaries": [
+    "yum", "rpm", "amazon-ssm-agent",
+    "aws", "imds-utils", "journalctl",
+    "timedatectl", "docker"
   ],
   "network": {
     "interface": "eth0",

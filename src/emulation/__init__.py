@@ -1,16 +1,18 @@
 """
-Honeyclaw Emulation Module
+HoneyClaw Emulation Layer - Stateful Interaction & Realistic Environment
 
-Provides stateful shell emulation, fake filesystem, timing simulation,
-and OS profiles for realistic honeypot interaction.
+Provides realistic filesystem emulation, state-aware shell, timing simulation,
+and OS profiles for realistic honeypot interaction to increase attacker dwell
+time and intelligence gathering.
 """
 
+from .filesystem import FakeFilesystem, load_profile
 from .shell import ShellEmulator
-from .filesystem import FakeFilesystem
 from .timing import TimingSimulator
 
 __all__ = [
-    'ShellEmulator',
-    'FakeFilesystem',
-    'TimingSimulator',
+    "FakeFilesystem",
+    "ShellEmulator",
+    "TimingSimulator",
+    "load_profile",
 ]
