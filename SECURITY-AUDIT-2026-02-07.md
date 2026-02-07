@@ -25,12 +25,12 @@ A comprehensive security audit was conducted on HoneyClaw SSH honeypot using a 1
 |----------|------------|--------|
 | Functional (F-01 to F-05) | 0/5 | ❌ FAIL |
 | Protocol (P-01 to P-05) | 4/5 | ✅ PASS |
-| Input Validation (I-01 to I-07) | 55/55 | ✅ PASS |
+| Input Validation (I-01 to I-07) | 5/55 confirmed, 50 inconclusive | ⚠️ INCONCLUSIVE |
 | Evasion (E-01 to E-05) | 0/5 | ❌ CRITICAL |
 | Logging (L-01 to L-05) | 2/5 | ⚠️ PARTIAL |
 | Operational (O-01 to O-05) | 4/5 | ✅ PASS |
 | Rate Limiting (R-01 to R-05) | 5/5 | ✅ PASS |
-| Attack Simulation (A-01 to A-05) | N/A | ⚠️ BLOCKED |
+| Attack Simulation (A-01 to A-05) | 0/5 | ⚠️ BLOCKED (rate-limited) |
 
 ---
 
@@ -50,24 +50,24 @@ A comprehensive security audit was conducted on HoneyClaw SSH honeypot using a 1
 **Impact:** Any attacker with basic skills will identify and avoid.  
 **Fix:** Implement proper SSH handshake sequence matching OpenSSH behavior.
 
-### 3. Health Check Mismatch
-**Severity:** CRITICAL  
-**Found by:** expert-devops  
-**Description:** fly.toml expects HTTP health check on :9090/health, but code only exposes SSH on :8022.  
-**Impact:** Will cause restart loops in production.  
-**Fix:** Implement HTTP /health endpoint OR change fly.toml to TCP check.
+### 3. No Health Check Endpoint
+**Severity:** CRITICAL
+**Found by:** expert-devops
+**Description:** No HTTP health endpoint exists. Code only exposes SSH on :8022 with no way for Fly.io to verify application health.
+**Impact:** No automated health monitoring; unhealthy instances not detected.
+**Fix:** ~~Implement HTTP /health endpoint OR change fly.toml to TCP check.~~ **FIXED:** Added HTTP /health endpoint on :9090 and updated fly.toml.
 
 ### 4. No Log Persistence
-**Severity:** HIGH  
-**Found by:** expert-devops, exec-logging  
-**Description:** No volume mount configured. Logs are ephemeral and lost on container restart.  
-**Fix:** Add [mounts] section to fly.toml for /var/log/honeypot.
+**Severity:** HIGH
+**Found by:** expert-devops, exec-logging
+**Description:** No volume mount configured. Logs are ephemeral and lost on container restart.
+**Fix:** ~~Add [mounts] section to fly.toml for /var/log/honeypot.~~ **FIXED:** Added `[mounts]` for `/data` volume and updated `LOG_PATH` to `/data/logs/ssh.json`.
 
 ### 5. Host Key Regeneration
-**Severity:** HIGH  
-**Found by:** expert-deception  
-**Description:** SSH host key regenerates on restart — clear detection signal for attackers.  
-**Fix:** Persist SSH host key in volume mount.
+**Severity:** HIGH
+**Found by:** expert-deception
+**Description:** SSH host key regenerates on restart — clear detection signal for attackers.
+**Fix:** ~~Persist SSH host key in volume mount.~~ **FIXED:** Host key now persisted to `HOST_KEY_PATH` on volume. Uses ed25519 (matches modern OpenSSH defaults).
 
 ### 6. Algorithm Ordering Mismatch
 **Severity:** HIGH  
@@ -79,7 +79,7 @@ A comprehensive security audit was conducted on HoneyClaw SSH honeypot using a 1
 
 ## What Works Well
 
-1. **Input Validation:** All 55 injection tests passed. Proper handling of oversized inputs, unicode, metacharacters, format strings.
+1. **Input Validation (partial):** 5 of 55 tests confirmed proper handling (null byte rejection via SASLPrepError). The remaining 50 tests resulted in connection resets during KEX — the payloads never reached the application-layer validation code. These should be re-tested after the SSH handshake is fixed. The server remained available after all tests (no actual crashes).
 
 2. **Rate Limiting:** Highly effective. Blocks aggressive scanners within seconds. 8+ minute block duration.
 
@@ -105,26 +105,26 @@ A comprehensive security audit was conducted on HoneyClaw SSH honeypot using a 1
 ## Recommended Fix Priority
 
 ### Phase 1: Make It Work (Critical)
-1. Fix SSH banner sending (must happen first on connect)
-2. Complete key exchange negotiation  
-3. Reach authentication phase and prompt for password
-4. Fix health check configuration
+1. Fix SSH banner sending (must happen first on connect) — *open: requires asyncssh debugging*
+2. Complete key exchange negotiation — *open: requires asyncssh debugging*
+3. Reach authentication phase and prompt for password — *open: requires asyncssh debugging*
+4. ~~Fix health check configuration~~ **DONE** — HTTP /health on :9090
 
 ### Phase 2: Make It Persist (High)
-5. Add volume mount for logs
-6. Persist SSH host key
-7. Implement log rotation
+5. ~~Add volume mount for logs~~ **DONE** — `/data` volume with `LOG_PATH=/data/logs/ssh.json`
+6. ~~Persist SSH host key~~ **DONE** — `HOST_KEY_PATH=/data/ssh_host_key`, ed25519
+7. Implement log rotation — *open*
 
 ### Phase 3: Make It Convincing (Medium)
-8. Match OpenSSH algorithm ordering
-9. Add response timing jitter
-10. Check Shodan for IP fingerprinting
+8. Match OpenSSH algorithm ordering — *open*
+9. Add response timing jitter — *open*
+10. Check Shodan for IP fingerprinting — *open*
 
 ### Phase 4: Make It Useful (Enhancement)
-11. Enable GeoIP enrichment
-12. Add correlation IDs
-13. Implement threat intel lookup
-14. Configure webhook alerting
+11. ~~Enable GeoIP enrichment~~ **DONE** — Fixed import path (added `__init__.py` to `src/` and `src/utils/`)
+12. ~~Enable correlation IDs~~ **DONE** — Fixed import path (Dockerfile now copies `src/`)
+13. Implement threat intel lookup — *open*
+14. Configure webhook alerting — *open (requires ALERT_WEBHOOK_URL secret)*
 
 ---
 
@@ -139,12 +139,12 @@ A comprehensive security audit was conducted on HoneyClaw SSH honeypot using a 1
 ### Test Results
 - `test-results/functional.md` — Basic functionality (0/5 pass)
 - `test-results/protocol.md` — Protocol attacks (4/5 pass)
-- `test-results/input-validation.md` — Injection tests (55/55 pass)
+- `test-results/input-validation.md` — Injection tests (5/55 confirmed, 50 inconclusive due to KEX failure)
 - `test-results/evasion.md` — Detection resistance (critical issues)
 - `test-results/logging.md` — Logging & alerting (2/5 pass)
 - `test-results/operational.md` — Resilience (4/5 pass)
 - `test-results/rate-limiting.md` — Rate limiting (5/5 pass)
-- `test-results/attack-sim.md` — Attack simulation (blocked by rate limit)
+- `test-results/attack-sim.md` — Attack simulation (0/5 — all tests blocked by rate limiting from earlier test agents)
 
 ### Planning Documents
 - `TEST-PLAN.md` — Original 8-category test plan

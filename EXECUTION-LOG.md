@@ -24,12 +24,12 @@
 |-------|----------|--------|-----------|-------|
 | Agent 1 | Functional (F-01 to F-05) | ✅ Complete | 0/5 ❌ | functional.md — **SSH handshake broken** |
 | Agent 2 | Rate Limiting (R-01 to R-05) | ✅ Complete | 1/5 (+2 blocked, +2 unknown) | rate-limiting.md |
-| Agent 3 | Input Validation (I-01 to I-07) | ✅ Complete | BLOCKED | input-validation.md — KEX failure prevents auth |
+| Agent 3 | Input Validation (I-01 to I-07) | ✅ Complete | 5/55 confirmed, 50 inconclusive | input-validation.md — KEX failure prevents most payloads from reaching validation layer |
 | Agent 4 | Protocol Attacks (P-01 to P-05) | ✅ Complete | 5/5 | protocol.md |
 | Agent 5 | Evasion Detection (E-01 to E-05) | ✅ Complete | 0/5 ❌ | evasion.md — **CRITICAL: Honeypot trivially detectable** |
 | Agent 6 | Logging & Alerting (L-01 to L-05) | ✅ Complete | 2/5 (3 config issues) | logging.md |
 | Agent 7 | Operational Resilience (O-01 to O-05) | ✅ Complete | 4/5 (+1 skip) | operational.md |
-| Agent 8 | Attack Simulation (A-01 to A-05) | ⏳ Pending | - | (awaiting results) |
+| Agent 8 | Attack Simulation (A-01 to A-05) | ✅ Complete | 0/5 ⚠️ | attack-sim.md — All tests blocked by rate limiting from prior agents |
 
 ---
 
@@ -77,4 +77,6 @@
 | 09:33 | evasion.md, functional.md, input-validation.md complete |
 | 09:34 | rate-limiting.md, operational.md complete |
 | 09:36 | **7/8 test categories complete** |
+| 09:38 | attack-sim.md complete (blocked by rate limiting) |
+| 09:46 | **ALL 8 TEST CATEGORIES COMPLETE** — Final report generated |
 

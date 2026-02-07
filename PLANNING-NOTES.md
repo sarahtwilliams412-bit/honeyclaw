@@ -233,25 +233,9 @@ All four experts conditionally approve. The test plan is solid for security vali
 
 ## Summary
 
-The expert panel identified **three major gaps** in the original test plan:
-
-### Gap 1: Infrastructure Will Undermine Security (DevOps)
-The honeypot will crash-loop in production due to health check mismatch. Logs will be lost on restart. Disk will fill up. These issues must be fixed before security testing is meaningful.
-
-### Gap 2: Deception Quality Untested (Offensive + Deception)
-The plan tests if the honeypot *works*, not if it *deceives*. An experienced attacker will identify it as a honeypot in 30 seconds using Shodan, TCP fingerprinting, and algorithm analysis. New detection resistance tests are required.
-
-### Gap 3: Intelligence Value Untested (Defensive)
-The plan ensures logs exist but not that they're *useful*. Without GeoIP, threat intel enrichment, proper schema, and alert aggregation, the honeypot generates noise instead of actionable intelligence.
-
-### Action Items
-1. **Immediate:** Fix infrastructure (health check, volume mount, log rotation)
-2. **Before testing:** Add Category 9 (Infrastructure) and Category 10 (Detection Resistance) tests
-3. **Enhance existing:** Upgrade L-* and E-* tests per expert recommendations
-4. **Document:** Expected rate limit behavior after restart, log schema, alert payload format
+> For the consolidated gap analysis, prioritized fix list, and final test results, see [SECURITY-AUDIT-2026-02-07.md](SECURITY-AUDIT-2026-02-07.md).
 
 ---
 
-*Review completed: 2026-02-07 09:29 PST*  
-*All 4 expert reviews received and synthesized*  
-*Ready for plan modification phase*
+*Review completed: 2026-02-07 09:29 PST*
+*All 4 expert reviews received and synthesized*

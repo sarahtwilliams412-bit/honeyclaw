@@ -26,8 +26,10 @@ primary_region = "sjc"
 
 [env]
   PORT = "8022"
+  HEALTH_PORT = "9090"
   SSH_BANNER = "OpenSSH_8.9p1 Ubuntu-3ubuntu0.6"
   LOG_PATH = "/data/logs/honeypot.json"
+  HOST_KEY_PATH = "/data/ssh_host_key"
   RATELIMIT_ENABLED = "true"
   RATELIMIT_CONN_PER_MIN = "20"
   RATELIMIT_AUTH_PER_HOUR = "200"
