@@ -1,0 +1,34 @@
+{
+  "os": "Debian GNU/Linux",
+  "version": "12 (bookworm)",
+  "codename": "bookworm",
+  "kernel": "6.1.0-17-amd64",
+  "arch": "x86_64",
+  "hostname": "web-prod-01",
+  "ssh_banner": "SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u2",
+  "motd": "Debian GNU/Linux 12 \\n \\l",
+  "packages": {
+    "openssh-server": "1:9.2p1-2+deb12u2",
+    "nginx": "1.22.1-9",
+    "postgresql-15": "15.5-0+deb12u1",
+    "python3": "3.11.2-1+b1"
+  },
+  "services": ["sshd", "nginx", "postgresql", "cron"],
+  "users": [
+    {"name": "root", "uid": 0, "shell": "/bin/bash"},
+    {"name": "www-data", "uid": 33, "shell": "/usr/sbin/nologin"},
+    {"name": "postgres", "uid": 113, "shell": "/bin/bash"}
+  ],
+  "network": {
+    "interface": "ens3",
+    "ip": "10.0.0.35",
+    "netmask": "255.255.255.0",
+    "gateway": "10.0.0.1",
+    "dns": ["10.0.0.1"]
+  },
+  "tcp_fingerprint": {
+    "ttl": 64,
+    "window_size": 65535,
+    "options": "mss 1460,sackOK,TS val ecr,nop,wscale 7"
+  }
+}

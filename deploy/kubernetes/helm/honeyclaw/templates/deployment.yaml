@@ -1,0 +1,98 @@
+{{- range .Values.templates }}
+{{- if .enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: honeyclaw-{{ .name }}
+  labels:
+    app: honeyclaw
+    template: {{ .name }}
+    app.kubernetes.io/name: honeyclaw
+    app.kubernetes.io/component: {{ .name }}
+spec:
+  replicas: {{ .replicas | default 1 }}
+  selector:
+    matchLabels:
+      app: honeyclaw
+      template: {{ .name }}
+  template:
+    metadata:
+      labels:
+        app: honeyclaw
+        template: {{ .name }}
+    spec:
+      securityContext:
+        runAsNonRoot: {{ $.Values.podSecurity.runAsNonRoot }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: template
+                      operator: In
+                      values:
+                        - {{ .name }}
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: honeypot
+          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          env:
+            - name: HONEYPOT_ID
+              value: "honeyclaw-{{ .name }}"
+            - name: HONEYCLAW_TEMPLATE
+              value: {{ .name }}
+            - name: HONEYCLAW_HEALTH_PORT
+              value: "{{ $.Values.healthCheck.port }}"
+            - name: HONEYCLAW_SELF_HEAL_ENABLED
+              value: "true"
+          ports:
+            {{- range .ports }}
+            - name: {{ .name }}
+              containerPort: {{ .containerPort }}
+              protocol: {{ .protocol | default "TCP" }}
+            {{- end }}
+          resources:
+            {{- toYaml .resources | nindent 12 }}
+          securityContext:
+            readOnlyRootFilesystem: {{ $.Values.podSecurity.readOnlyRootFilesystem }}
+            allowPrivilegeEscalation: {{ $.Values.podSecurity.allowPrivilegeEscalation }}
+            capabilities:
+              drop:
+                - ALL
+          livenessProbe:
+            httpGet:
+              path: {{ $.Values.healthCheck.path }}
+              port: {{ $.Values.healthCheck.port }}
+            initialDelaySeconds: {{ $.Values.healthCheck.initialDelaySeconds }}
+            periodSeconds: {{ $.Values.healthCheck.periodSeconds }}
+            timeoutSeconds: {{ $.Values.healthCheck.timeoutSeconds }}
+            failureThreshold: {{ $.Values.healthCheck.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ $.Values.healthCheck.path }}
+              port: {{ $.Values.healthCheck.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: var-log
+              mountPath: /var/log/honeyclaw
+            - name: recordings
+              mountPath: /var/lib/honeyclaw/recordings
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 100Mi
+        - name: var-log
+          emptyDir:
+            sizeLimit: 500Mi
+        - name: recordings
+          emptyDir:
+            sizeLimit: 1Gi
+{{- end }}
+{{- end }}
