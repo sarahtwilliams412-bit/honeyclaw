@@ -55,6 +55,15 @@ except ImportError:
     def send_alert(event, event_type):
         pass  # No-op if alerting not available
 
+# MITRE ATT&CK enrichment (optional)
+try:
+    from src.analysis.mitre_mapper import enrich_event as mitre_enrich
+    MITRE_ENABLED = True
+except ImportError:
+    MITRE_ENABLED = False
+    def mitre_enrich(event):
+        return event
+
 # =============================================================================
 # Rate Limiting
 # =============================================================================
@@ -290,12 +299,19 @@ def log_event(event_type, data):
     """Log event to file, stdout, and alert pipeline"""
     # Sanitize event type
     safe_event_type = sanitize_for_log(event_type, max_length=64)
-    
+
     event = {
         'timestamp': datetime.utcnow().isoformat() + 'Z',
         'event': safe_event_type,
         **data
     }
+
+    # Enrich with MITRE ATT&CK mappings
+    if MITRE_ENABLED:
+        try:
+            mitre_enrich(event)
+        except Exception:
+            pass  # Non-critical enrichment failure
     
     # Ensure total log line doesn't exceed limits
     line = json.dumps(event)

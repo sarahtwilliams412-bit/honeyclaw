@@ -79,6 +79,7 @@ class HoneypotEvent:
     tags: List[str] = field(default_factory=list)
     mitre_tactics: List[str] = field(default_factory=list)
     mitre_techniques: List[str] = field(default_factory=list)
+    mitre_technique_names: List[str] = field(default_factory=list)
     
     # Session tracking
     session_id: Optional[str] = None

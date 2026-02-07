@@ -194,6 +194,7 @@ class ElasticsearchConnector(SIEMConnector):
                 } if event.mitre_tactics else None,
                 "technique": {
                     "id": event.mitre_techniques,
+                    "name": event.mitre_technique_names,
                 } if event.mitre_techniques else None,
             } if event.mitre_tactics or event.mitre_techniques else None,
             

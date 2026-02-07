@@ -30,6 +30,15 @@ except ImportError:
     def send_alert(event, event_type):
         pass
 
+# MITRE ATT&CK enrichment (optional)
+try:
+    from src.analysis.mitre_mapper import enrich_event as mitre_enrich
+    MITRE_ENABLED = True
+except ImportError:
+    MITRE_ENABLED = False
+    def mitre_enrich(event):
+        return event
+
 LOG_DIR = '/var/log/honeypot'
 AGGREGATED_LOG = os.path.join(LOG_DIR, 'aggregated.json')
 S3_BUCKET = os.environ.get('S3_BUCKET', '')
@@ -88,7 +97,14 @@ def parse_log_line(line, source):
     event['honeypot_id'] = HONEYPOT_ID
     if truncated:
         event['_line_truncated'] = True
-    
+
+    # Enrich with MITRE ATT&CK mappings
+    if MITRE_ENABLED:
+        try:
+            mitre_enrich(event)
+        except Exception:
+            pass  # Non-critical enrichment failure
+
     return event
 
 def tail_file(filepath, position):
