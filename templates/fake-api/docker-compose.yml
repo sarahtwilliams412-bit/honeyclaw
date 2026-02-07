@@ -1,0 +1,85 @@
+version: "3.8"
+
+# HoneyClaw Fake API Honeypot - Hardened Docker Compose
+# Enforces network isolation, AppArmor, Seccomp, and resource limits.
+
+services:
+  honeypot-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: honeyclaw-api
+    restart: unless-stopped
+
+    # Security hardening
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+      - apparmor=honeyclaw-api
+      - seccomp=../../deploy/seccomp/honeyclaw-default.json
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:noexec,nosuid,size=32m
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
+          pids: 30
+        reservations:
+          cpus: "0.1"
+          memory: 64M
+
+    # Network - isolated honeypot network only
+    networks:
+      - honeyclaw-isolated
+
+    # Ports
+    ports:
+      - "${HONEYCLAW_API_PORT:-8080}:8080"
+
+    # Volumes - only logs are writable
+    volumes:
+      - api-logs:/var/log/honeypot
+
+    # Environment
+    environment:
+      - HONEYPOT_ID=${HONEYPOT_ID:-api-default}
+      - HONEYPOT_TEMPLATE=fake-api
+      - S3_BUCKET=${HONEYCLAW_S3_BUCKET:-}
+      - S3_ENDPOINT=${HONEYCLAW_S3_ENDPOINT:-}
+      - SIEM_ENABLED=${SIEM_ENABLED:-false}
+      - SIEM_PROVIDER=${SIEM_PROVIDER:-}
+      - SIEM_ENDPOINT=${SIEM_ENDPOINT:-}
+      - SIEM_TOKEN=${SIEM_TOKEN:-}
+      - ALERT_WEBHOOK_URL=${ALERT_WEBHOOK_URL:-}
+      - ALERT_SEVERITY_THRESHOLD=${ALERT_SEVERITY_THRESHOLD:-MEDIUM}
+
+    # Labels
+    labels:
+      honeyclaw.template: fake-api
+      honeyclaw.interaction: medium
+      honeyclaw.isolation: strict
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:8080/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  honeyclaw-isolated:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_icc: "false"
+      com.docker.network.bridge.enable_ip_masquerade: "false"
+    internal: true
+
+volumes:
+  api-logs:
+    driver: local
