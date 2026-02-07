@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
 Simple SSH Honeypot - Logs all connection attempts
-Version: 1.4.0 (real-time alerting support)
+Version: 1.5.0 (health endpoint + host key persistence)
 
 Environment variables:
   PORT                       - Listen port (default: 8022)
+  HEALTH_PORT                - Health check HTTP port (default: 9090)
   LOG_PATH                   - Log file path (default: /var/log/honeypot/ssh.json)
+  HOST_KEY_PATH              - Persistent host key path (default: None, generates ephemeral)
   SSH_BANNER                 - SSH version banner (default: OpenSSH_8.9p1 Ubuntu-3ubuntu0.6)
-  
+
 Rate limit configuration:
   RATELIMIT_ENABLED          - Enable rate limiting (default: true)
   RATELIMIT_CONN_PER_MIN     - Max connections per IP per minute (default: 10)
@@ -178,11 +180,16 @@ def get_port():
         return 8022
 
 PORT = get_port()
+HEALTH_PORT = int(os.environ.get("HEALTH_PORT", 9090))
 LOG_FILE = Path(os.environ.get("LOG_PATH", "/var/log/honeypot/ssh.json"))
+HOST_KEY_PATH = os.environ.get("HOST_KEY_PATH", "")
 
 # SSH banner - hide AsyncSSH identity
 # Default looks like a common Ubuntu OpenSSH server
 SSH_BANNER = os.environ.get("SSH_BANNER", "OpenSSH_8.9p1 Ubuntu-3ubuntu0.6")
+
+# Track server health state
+_server_healthy = False
 
 def hash_password(password: str) -> str:
     """Hash password for safe logging (first 16 chars of SHA256)"""
@@ -358,27 +365,94 @@ def log_event(event_type, data):
             print(f"[ALERT] Error: {e}", file=sys.stderr)
 
 
+def load_or_generate_host_key():
+    """Load host key from persistent storage or generate a new one.
+
+    If HOST_KEY_PATH is set and the file exists, loads the key from disk.
+    Otherwise generates a new ed25519 key (preferred by modern OpenSSH)
+    and saves it to HOST_KEY_PATH if configured.
+    """
+    key_path = Path(HOST_KEY_PATH) if HOST_KEY_PATH else None
+
+    # Try to load existing key from persistent storage
+    if key_path and key_path.exists():
+        try:
+            key = asyncssh.read_private_key(str(key_path))
+            print(f"[INFO] Loaded persistent host key from {key_path}", flush=True)
+            return key
+        except Exception as e:
+            print(f"[WARN] Failed to load host key from {key_path}: {e}", flush=True)
+
+    # Generate new ed25519 key (matches modern OpenSSH defaults)
+    print("[DEBUG] Generating ed25519 host key...", flush=True)
+    key = asyncssh.generate_private_key('ssh-ed25519')
+
+    # Persist to volume if path is configured
+    if key_path:
+        try:
+            key_path.parent.mkdir(parents=True, exist_ok=True)
+            key.write_private_key(str(key_path))
+            os.chmod(str(key_path), 0o600)
+            print(f"[INFO] Saved host key to {key_path}", flush=True)
+        except Exception as e:
+            print(f"[WARN] Could not persist host key to {key_path}: {e}", flush=True)
+
+    return key
+
+
+async def start_health_server():
+    """Start a minimal HTTP health check server on HEALTH_PORT.
+
+    Returns 200 OK at /health when the SSH server is running.
+    """
+    from aiohttp import web
+
+    async def health_handler(request):
+        if _server_healthy:
+            return web.json_response({"status": "healthy", "port": PORT, "version": "1.5.0"})
+        return web.json_response({"status": "starting"}, status=503)
+
+    app = web.Application()
+    app.router.add_get("/health", health_handler)
+
+    runner = web.AppRunner(app, access_log=None)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", HEALTH_PORT)
+    await site.start()
+    print(f"[INFO] Health endpoint listening on :{HEALTH_PORT}/health", flush=True)
+    return runner
+
+
 async def start_server():
     """Start the SSH honeypot server"""
+    global _server_healthy
+    health_runner = None
     try:
-        # Generate host key on startup
-        print("[DEBUG] Generating RSA host key...", flush=True)
-        key = asyncssh.generate_private_key('ssh-rsa', 2048)
-        print("[DEBUG] Host key generated", flush=True)
-        
+        # Start health endpoint first so Fly.io doesn't restart us
+        try:
+            health_runner = await start_health_server()
+        except Exception as e:
+            print(f"[WARN] Health server failed to start: {e}", flush=True)
+
+        # Load or generate host key (persists across restarts if volume mounted)
+        key = load_or_generate_host_key()
+
         log_event('startup', {
-            'port': PORT, 
-            'version': '1.4.0',
+            'port': PORT,
+            'health_port': HEALTH_PORT,
+            'version': '1.5.0',
             'rate_limiting': rate_limiter.enabled,
             'conn_limit': f'{rate_limiter.conn_per_min}/min',
             'auth_limit': f'{rate_limiter.auth_per_hour}/hr',
             'ssh_banner': SSH_BANNER,
             'alerting_enabled': ALERTING_ENABLED,
+            'host_key_persistent': bool(HOST_KEY_PATH),
+            'enhanced_logging': ENHANCED_LOGGING_ENABLED,
         })
-        
+
         if ALERTING_ENABLED:
             print(f"[INFO] Real-time alerting enabled", flush=True)
-        
+
         print(f"[DEBUG] Starting SSH server on 0.0.0.0:{PORT}...", flush=True)
         print(f"[DEBUG] SSH banner: {SSH_BANNER}", flush=True)
         server = await asyncssh.create_server(
@@ -389,18 +463,26 @@ async def start_server():
         )
         print(f"[DEBUG] Server started: {server}", flush=True)
         print(f"SSH Honeypot running on port {PORT}", flush=True)
-        
+
+        # Mark healthy now that SSH server is accepting connections
+        _server_healthy = True
+
         # Wait for shutdown signal
         await shutdown_event.wait()
         print("[INFO] Shutting down gracefully...", flush=True)
+        _server_healthy = False
         rate_limiter.shutdown()
         server.close()
         await server.wait_closed()
+        if health_runner:
+            await health_runner.cleanup()
         log_event('shutdown', {'reason': 'signal'})
-        
+
     except Exception as e:
         print(f"[FATAL] Server error: {e}", flush=True)
         traceback.print_exc()
+        if health_runner:
+            await health_runner.cleanup()
         raise
 
 
