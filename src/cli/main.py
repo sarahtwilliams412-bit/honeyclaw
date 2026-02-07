@@ -529,13 +529,183 @@ def cmd_report_lookup(args):
     asyncio.run(do_lookup())
 
 
+def cmd_logs_correlations(args):
+    """Show active correlation sessions"""
+    from src.utils.correlation import get_correlation_manager
+
+    mgr = get_correlation_manager()
+    sessions = mgr.get_active_sessions()
+
+    if args.json:
+        print(json.dumps(sessions, indent=2))
+        return
+
+    if not sessions:
+        print("No active correlation sessions.")
+        return
+
+    headers = ["Source IP", "Correlation ID", "First Seen", "Last Seen", "Duration"]
+    rows = []
+    for ip, info in sessions.items():
+        rows.append([
+            ip,
+            info["correlation_id"],
+            info["first_seen"][:19],
+            info["last_seen"][:19],
+            f"{info['duration_seconds']:.1f}s",
+        ])
+
+    print(format_table(headers, rows))
+    print(f"\nActive sessions: {len(sessions)}")
+
+
+def cmd_logs_stats(args):
+    """Show enhanced logging pipeline statistics"""
+    stats = {}
+
+    try:
+        from src.utils.correlation import get_correlation_manager
+        stats["correlation"] = get_correlation_manager().get_stats()
+    except Exception as e:
+        stats["correlation"] = {"error": str(e)}
+
+    try:
+        from src.utils.geoip import get_geoip_resolver
+        resolver = get_geoip_resolver()
+        stats["geoip"] = {"enabled": resolver.enabled}
+    except Exception as e:
+        stats["geoip"] = {"error": str(e)}
+
+    try:
+        from src.integrations.immutable_storage import ImmutableLogStore
+        store = ImmutableLogStore()
+        stats["immutable_storage"] = store.get_stats()
+    except Exception as e:
+        stats["immutable_storage"] = {"error": str(e)}
+
+    try:
+        from src.logging.backup import get_backup_stream
+        stats["backup_stream"] = get_backup_stream().get_stats()
+    except Exception as e:
+        stats["backup_stream"] = {"error": str(e)}
+
+    if args.json:
+        print(json.dumps(stats, indent=2))
+        return
+
+    print("=== Honeyclaw Enhanced Logging Status ===\n")
+
+    # Correlation
+    corr = stats.get("correlation", {})
+    print("Correlation IDs:")
+    if "error" in corr:
+        print(f"  Error: {corr['error']}")
+    else:
+        print(f"  Active sessions:  {corr.get('active_sessions', 0)}")
+        print(f"  Created:          {corr.get('correlations_created', 0)}")
+        print(f"  Reused:           {corr.get('correlations_reused', 0)}")
+        print(f"  Expired:          {corr.get('correlations_expired', 0)}")
+        print(f"  Window:           {corr.get('window_seconds', 0)}s")
+
+    # GeoIP
+    geo = stats.get("geoip", {})
+    print(f"\nGeolocation:")
+    if "error" in geo:
+        print(f"  Error: {geo['error']}")
+    else:
+        print(f"  Enabled: {geo.get('enabled', False)}")
+
+    # Immutable storage
+    imm = stats.get("immutable_storage", {})
+    print(f"\nImmutable Storage:")
+    if "error" in imm:
+        print(f"  Error: {imm['error']}")
+    else:
+        print(f"  Enabled:        {imm.get('enabled', False)}")
+        if imm.get("enabled"):
+            print(f"  Bucket:         {imm.get('bucket')}")
+            print(f"  Retention:      {imm.get('retention_days')}d ({imm.get('retention_mode')})")
+            print(f"  Events shipped: {imm.get('events_shipped', 0)}")
+            print(f"  Objects:        {imm.get('objects_uploaded', 0)}")
+            print(f"  Bytes:          {imm.get('bytes_uploaded', 0)}")
+            print(f"  Errors:         {imm.get('upload_errors', 0)}")
+
+    # Backup
+    bak = stats.get("backup_stream", {})
+    print(f"\nBackup Stream:")
+    if "error" in bak:
+        print(f"  Error: {bak['error']}")
+    else:
+        print(f"  Enabled:  {bak.get('enabled', False)}")
+        if bak.get("enabled"):
+            print(f"  Backend:  {bak.get('backend')}")
+            print(f"  Shipped:  {bak.get('events_shipped', 0)}")
+            print(f"  Dropped:  {bak.get('events_dropped', 0)}")
+            print(f"  Errors:   {bak.get('ship_errors', 0)}")
+
+
+def cmd_logs_setup_immutable(args):
+    """Set up S3 bucket for immutable log storage"""
+    from src.integrations.immutable_storage import ImmutableLogStore
+
+    store = ImmutableLogStore()
+    if not store.enabled:
+        print("Error: Immutable storage not configured.", file=sys.stderr)
+        print("Set IMMUTABLE_S3_BUCKET environment variable.", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Setting up immutable storage on s3://{store.config.bucket}/")
+    print(f"  Retention: {store.config.retention_days} days ({store.config.retention_mode})")
+    print(f"  Versioning: {'enabled' if store.config.versioning_enabled else 'disabled'}")
+
+    if not args.force:
+        confirm = input("\nProceed? [y/N] ").strip().lower()
+        if confirm != 'y':
+            print("Cancelled")
+            return
+
+    results = store.setup_bucket()
+    print("\nResults:")
+    print(json.dumps(results, indent=2, default=str))
+
+
+def cmd_logs_verify(args):
+    """Verify integrity of a stored log object"""
+    from src.integrations.immutable_storage import ImmutableLogStore
+
+    store = ImmutableLogStore()
+    if not store.enabled:
+        print("Error: Immutable storage not configured.", file=sys.stderr)
+        sys.exit(1)
+
+    result = store.verify_integrity(args.key)
+
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        sys.exit(1)
+
+    print(f"Key:             {result.get('key')}")
+    print(f"Version:         {result.get('version_id', 'N/A')}")
+    print(f"Size:            {result.get('content_length', 0)} bytes")
+    print(f"ETag:            {result.get('etag', 'N/A')}")
+    print(f"Last Modified:   {result.get('last_modified', 'N/A')}")
+    print(f"Immutable:       {result.get('immutable', False)}")
+    if result.get("immutable"):
+        print(f"Lock Mode:       {result.get('lock_mode')}")
+        print(f"Retain Until:    {result.get('lock_retain_until')}")
+
+
 def cli():
     """Main CLI entry point"""
     parser = argparse.ArgumentParser(
         prog='honeyclaw',
         description='Honeyclaw - SSH/HTTP Honeypot Framework'
     )
-    
+
     subparsers = parser.add_subparsers(dest='command', help='Commands')
     
     # replay command group
@@ -609,20 +779,49 @@ def cli():
     report_lookup_parser.add_argument('--verbose', '-v', action='store_true', help='Show raw WHOIS')
     report_lookup_parser.set_defaults(func=cmd_report_lookup)
     
+    # === Logs command group ===
+    logs_parser = subparsers.add_parser('logs', help='Enhanced logging commands')
+    logs_subparsers = logs_parser.add_subparsers(dest='subcommand', help='Logs subcommands')
+
+    # logs correlations
+    logs_corr_parser = logs_subparsers.add_parser('correlations', help='Show active correlation sessions')
+    logs_corr_parser.add_argument('--json', '-j', action='store_true', help='Output as JSON')
+    logs_corr_parser.set_defaults(func=cmd_logs_correlations)
+
+    # logs stats
+    logs_stats_parser = logs_subparsers.add_parser('stats', help='Show logging pipeline statistics')
+    logs_stats_parser.add_argument('--json', '-j', action='store_true', help='Output as JSON')
+    logs_stats_parser.set_defaults(func=cmd_logs_stats)
+
+    # logs setup-immutable
+    logs_setup_parser = logs_subparsers.add_parser('setup-immutable', help='Set up S3 bucket for immutable storage')
+    logs_setup_parser.add_argument('--force', '-f', action='store_true', help='Skip confirmation')
+    logs_setup_parser.set_defaults(func=cmd_logs_setup_immutable)
+
+    # logs verify
+    logs_verify_parser = logs_subparsers.add_parser('verify', help='Verify integrity of stored log object')
+    logs_verify_parser.add_argument('key', help='S3 object key to verify')
+    logs_verify_parser.add_argument('--json', '-j', action='store_true', help='Output as JSON')
+    logs_verify_parser.set_defaults(func=cmd_logs_verify)
+
     args = parser.parse_args()
-    
+
     if not args.command:
         parser.print_help()
         sys.exit(0)
-    
+
     if args.command == 'replay' and not args.subcommand:
         replay_parser.print_help()
         sys.exit(0)
-    
+
     if args.command == 'report' and not args.subcommand:
         report_parser.print_help()
         sys.exit(0)
-    
+
+    if args.command == 'logs' and not args.subcommand:
+        logs_parser.print_help()
+        sys.exit(0)
+
     if hasattr(args, 'func'):
         args.func(args)
     else:

@@ -39,7 +39,7 @@ See [docs/IMPROVEMENT-PLAN.md](docs/IMPROVEMENT-PLAN.md) for the full implementa
 | 14 | Stateful Shell Emulation & Fake Filesystem | 🔥🔥🔥 | High | **P1** | HIGH |
 | 15 | AI Adaptive Deception (Sophistication Classifier) | 🔥🔥🔥 | High | **P1** | HIGH |
 | 16 | MITRE ATT&CK Full Event Mapping | 🔥🔥 | Medium | **P1** | MEDIUM |
-| 17 | Log Correlation IDs & Immutability (S3 Object Lock) | 🔥🔥 | Medium | **P1** | MEDIUM |
+| 17 | Log Correlation IDs & Immutability (S3 Object Lock) | 🔥🔥 | Medium | ✅ DONE | MEDIUM |
 | 18 | Anti-Fingerprinting Measures | 🔥🔥🔥 | High | **P1** | HIGH |
 | 19 | DDoS Protection & Global Rate Limits | 🔥🔥 | Medium | **P1** | MEDIUM |
 | 20 | SOAR Playbook Integration | 🔥🔥 | Medium | **P2** | MEDIUM |
@@ -385,7 +385,7 @@ auto_report:
 - [ ] #14 Stateful shell emulation & fake filesystem
 - [ ] #15 AI adaptive deception (sophistication classifier)
 - [ ] #16 MITRE ATT&CK full event mapping
-- [ ] #17 Correlation IDs + log immutability
+- [x] #17 Correlation IDs + log immutability ✅ DONE
 
 **Phase 3 - Anti-Fingerprinting (Weeks 5-6):**
 - [ ] #18 Anti-fingerprinting measures
