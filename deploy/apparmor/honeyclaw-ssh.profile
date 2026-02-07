@@ -6,8 +6,9 @@
 
 profile honeyclaw-ssh flags=(attach_disconnected,mediate_deleted) {
   #include <abstractions/base>
+  #include <abstractions/nameservice>
+  #include <abstractions/python>
 
-  # Deny all by default, then allow specific access
   # Network: allow only TCP listening (inbound SSH) and established connections
   network inet tcp,
   network inet6 tcp,
@@ -38,24 +39,39 @@ profile honeyclaw-ssh flags=(attach_disconnected,mediate_deleted) {
 
   # Python runtime
   /usr/local/bin/python* ix,
+  /usr/bin/python3* rix,
+  /usr/local/bin/python3* rix,
   /usr/local/lib/python*/** r,
-  /usr/local/lib/python*/**/__pycache__/** rw,
+  /usr/lib/python3/** r,
+
+  # Honeypot application
+  /opt/honeyclaw/** r,
+  /opt/honeyclaw/src/** r,
+  /opt/honeyclaw/templates/** r,
 
   # Logging - write access only to honeypot log directory
   /var/log/honeypot/** rw,
   /var/log/honeypot/ r,
+  /var/log/honeyclaw/** rw,
+  /var/lib/honeyclaw/** rw,
 
   # Temporary files needed by Python
   /tmp/** rw,
   /tmp/ r,
 
-  # /proc and /sys - limited read access
+  # /proc and /sys - limited read access (for fake responses)
   @{PROC}/sys/kernel/random/uuid r,
   @{PROC}/sys/kernel/hostname r,
   @{PROC}/meminfo r,
   @{PROC}/cpuinfo r,
+  @{PROC}/loadavg r,
+  @{PROC}/net/tcp r,
+  @{PROC}/net/tcp6 r,
   @{PROC}/self/fd/ r,
   @{PROC}/self/maps r,
+  @{PROC}/@{pid}/fd/ r,
+  @{PROC}/@{pid}/cmdline r,
+  @{PROC}/@{pid}/stat r,
   owner @{PROC}/self/status r,
 
   # Deny sensitive filesystem areas
@@ -72,6 +88,8 @@ profile honeyclaw-ssh flags=(attach_disconnected,mediate_deleted) {
   deny /proc/sys/kernel/modprobe rw,
   deny /proc/kcore r,
   deny /proc/kmem rw,
+  deny /proc/*/mem rw,
+  deny /proc/*/root/** rw,
   deny /sys/fs/cgroup/** w,
   deny /sys/devices/virtual/dmi/** r,
 
@@ -89,6 +107,16 @@ profile honeyclaw-ssh flags=(attach_disconnected,mediate_deleted) {
   # Deny access to Docker socket
   deny /var/run/docker.sock rw,
   deny /run/docker.sock rw,
+
+  # Deny dangerous capabilities
+  deny capability sys_admin,
+  deny capability sys_ptrace,
+  deny capability sys_module,
+  deny capability sys_rawio,
+  deny capability net_admin,
+  deny capability sys_boot,
+  deny capability sys_time,
+  deny capability mknod,
 
   # Signal handling - only to own processes
   signal (send,receive) peer=honeyclaw-ssh,

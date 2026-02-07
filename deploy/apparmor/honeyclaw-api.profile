@@ -6,6 +6,7 @@
 
 profile honeyclaw-api flags=(attach_disconnected,mediate_deleted) {
   #include <abstractions/base>
+  #include <abstractions/nameservice>
 
   # Network: allow TCP for HTTP serving and established connections
   network inet tcp,
@@ -38,11 +39,20 @@ profile honeyclaw-api flags=(attach_disconnected,mediate_deleted) {
 
   # Node.js runtime
   /usr/local/bin/node ix,
+  /usr/bin/node rix,
   /usr/local/lib/node_modules/** r,
+  /usr/lib/nodejs/** r,
+
+  # Honeypot application (both paths for compatibility)
+  /opt/honeyclaw/** r,
+  /opt/honeyclaw/templates/fake-api/** r,
+  /opt/honeyclaw/node_modules/** r,
 
   # Logging - write access only to honeypot log directory
   /var/log/honeypot/** rw,
   /var/log/honeypot/ r,
+  /var/log/honeyclaw/** rw,
+  /var/lib/honeyclaw/** rw,
 
   # Temporary files needed by Node.js
   /tmp/** rw,
@@ -53,8 +63,10 @@ profile honeyclaw-api flags=(attach_disconnected,mediate_deleted) {
   @{PROC}/sys/kernel/hostname r,
   @{PROC}/meminfo r,
   @{PROC}/cpuinfo r,
+  @{PROC}/loadavg r,
   @{PROC}/self/fd/ r,
   @{PROC}/self/maps r,
+  @{PROC}/@{pid}/fd/ r,
   owner @{PROC}/self/status r,
 
   # Deny sensitive filesystem areas
@@ -71,6 +83,8 @@ profile honeyclaw-api flags=(attach_disconnected,mediate_deleted) {
   deny /proc/sys/kernel/modprobe rw,
   deny /proc/kcore r,
   deny /proc/kmem rw,
+  deny /proc/*/mem rw,
+  deny /proc/*/root/** rw,
   deny /sys/fs/cgroup/** w,
   deny /sys/devices/virtual/dmi/** r,
 
@@ -88,6 +102,14 @@ profile honeyclaw-api flags=(attach_disconnected,mediate_deleted) {
   # Deny access to Docker socket
   deny /var/run/docker.sock rw,
   deny /run/docker.sock rw,
+
+  # Deny dangerous capabilities
+  deny capability sys_admin,
+  deny capability sys_ptrace,
+  deny capability sys_module,
+  deny capability sys_rawio,
+  deny capability net_admin,
+  deny capability sys_boot,
 
   # Signal handling - only to own processes
   signal (send,receive) peer=honeyclaw-api,

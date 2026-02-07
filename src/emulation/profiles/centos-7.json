@@ -1,0 +1,34 @@
+{
+  "os": "CentOS Linux",
+  "version": "7 (Core)",
+  "codename": "Core",
+  "kernel": "3.10.0-1160.105.1.el7.x86_64",
+  "arch": "x86_64",
+  "hostname": "db-master-01",
+  "ssh_banner": "SSH-2.0-OpenSSH_7.4",
+  "motd": "CentOS Linux 7 (Core)\nKernel \\r on an \\m",
+  "packages": {
+    "openssh-server": "7.4p1-22.el7_9",
+    "httpd": "2.4.6-99.el7.centos.1",
+    "mariadb-server": "5.5.68-1.el7",
+    "python": "2.7.5-93.el7_9"
+  },
+  "services": ["sshd", "httpd", "mariadb", "crond", "firewalld"],
+  "users": [
+    {"name": "root", "uid": 0, "shell": "/bin/bash"},
+    {"name": "apache", "uid": 48, "shell": "/sbin/nologin"},
+    {"name": "mysql", "uid": 27, "shell": "/sbin/nologin"}
+  ],
+  "network": {
+    "interface": "eth0",
+    "ip": "10.0.0.30",
+    "netmask": "255.255.255.0",
+    "gateway": "10.0.0.1",
+    "dns": ["10.0.0.1"]
+  },
+  "tcp_fingerprint": {
+    "ttl": 64,
+    "window_size": 29200,
+    "options": "mss 1460,sackOK,TS val ecr,nop,wscale 7"
+  }
+}
