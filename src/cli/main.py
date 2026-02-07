@@ -4,6 +4,7 @@ Honeyclaw CLI - Main entry point
 """
 
 import argparse
+import asyncio
 import json
 import os
 import sys
@@ -385,7 +386,6 @@ def cmd_replay_delete(args):
 
 def cmd_report(args):
     """Report an IP address to abuse databases"""
-    import asyncio
     from src.reporting import ReportingEngine, ReportingConfig
     
     # Build config from args
@@ -501,7 +501,6 @@ def cmd_report_log(args):
 
 def cmd_report_lookup(args):
     """Lookup abuse contact for an IP"""
-    import asyncio
     from src.reporting.providers.isp_abuse import ISPAbuseReporter
     
     reporter = ISPAbuseReporter()
@@ -529,30 +528,33 @@ def cmd_report_lookup(args):
     asyncio.run(do_lookup())
 
 
+# === Logs Commands ===
+
 def cmd_logs_correlations(args):
     """Show active correlation sessions"""
-    from src.utils.correlation import get_correlation_manager
+    from src.utils.correlation import get_correlation_engine
 
-    mgr = get_correlation_manager()
-    sessions = mgr.get_active_sessions()
+    engine = get_correlation_engine()
+    sessions = engine.get_active_sessions()
 
     if args.json:
-        print(json.dumps(sessions, indent=2))
+        print(json.dumps([s.to_dict() for s in sessions], indent=2))
         return
 
     if not sessions:
         print("No active correlation sessions.")
         return
 
-    headers = ["Source IP", "Correlation ID", "First Seen", "Last Seen", "Duration"]
+    headers = ["Source IP", "Correlation ID", "First Seen", "Last Seen", "Events", "Services"]
     rows = []
-    for ip, info in sessions.items():
+    for session in sessions:
         rows.append([
-            ip,
-            info["correlation_id"],
-            info["first_seen"][:19],
-            info["last_seen"][:19],
-            f"{info['duration_seconds']:.1f}s",
+            session.source_ip,
+            session.correlation_id,
+            datetime.fromtimestamp(session.first_seen).strftime('%H:%M:%S'),
+            datetime.fromtimestamp(session.last_seen).strftime('%H:%M:%S'),
+            str(session.event_count),
+            ", ".join(session.services) if session.services else "-",
         ])
 
     print(format_table(headers, rows))
@@ -564,15 +566,15 @@ def cmd_logs_stats(args):
     stats = {}
 
     try:
-        from src.utils.correlation import get_correlation_manager
-        stats["correlation"] = get_correlation_manager().get_stats()
+        from src.utils.correlation import get_correlation_engine
+        stats["correlation"] = get_correlation_engine().get_stats()
     except Exception as e:
         stats["correlation"] = {"error": str(e)}
 
     try:
-        from src.utils.geoip import get_geoip_resolver
-        resolver = get_geoip_resolver()
-        stats["geoip"] = {"enabled": resolver.enabled}
+        from src.utils.geoip import get_geoip
+        geoip = get_geoip()
+        stats["geoip"] = {"enabled": geoip.enabled}
     except Exception as e:
         stats["geoip"] = {"error": str(e)}
 
@@ -601,11 +603,11 @@ def cmd_logs_stats(args):
     if "error" in corr:
         print(f"  Error: {corr['error']}")
     else:
-        print(f"  Active sessions:  {corr.get('active_sessions', 0)}")
-        print(f"  Created:          {corr.get('correlations_created', 0)}")
-        print(f"  Reused:           {corr.get('correlations_reused', 0)}")
-        print(f"  Expired:          {corr.get('correlations_expired', 0)}")
-        print(f"  Window:           {corr.get('window_seconds', 0)}s")
+        print(f"  Active sessions:   {corr.get('active_sessions', 0)}")
+        print(f"  Total sessions:    {corr.get('total_sessions', 0)}")
+        print(f"  Events correlated: {corr.get('total_events_correlated', 0)}")
+        print(f"  Multi-service:     {corr.get('multi_service_sessions', 0)}")
+        print(f"  Window:            {corr.get('correlation_window_seconds', 0)}s")
 
     # GeoIP
     geo = stats.get("geoip", {})
@@ -697,6 +699,72 @@ def cmd_logs_verify(args):
     if result.get("immutable"):
         print(f"Lock Mode:       {result.get('lock_mode')}")
         print(f"Retain Until:    {result.get('lock_retain_until')}")
+
+
+# === Health Commands ===
+
+def cmd_health(args):
+    """Run a health check"""
+    from src.health.monitor import HealthMonitor
+
+    # Parse services
+    services = {}
+    if args.services:
+        for svc in args.services.split(","):
+            parts = svc.strip().split(":")
+            if len(parts) == 2:
+                services[parts[0]] = int(parts[1])
+
+    monitor = HealthMonitor(
+        honeypot_id=os.environ.get('HONEYPOT_ID', 'honeyclaw'),
+        services=services,
+    )
+
+    report = asyncio.run(monitor.check())
+
+    if args.json:
+        print(report.to_json())
+        return
+
+    status_colors = {
+        "healthy": "\033[32m",     # green
+        "degraded": "\033[33m",    # yellow
+        "compromised": "\033[31m", # red
+        "unknown": "\033[90m",     # gray
+    }
+    reset = "\033[0m"
+    color = status_colors.get(report.status.value, "")
+
+    print(f"=== Honeyclaw Health Check ===\n")
+    print(f"Status:     {color}{report.status.value.upper()}{reset}")
+    print(f"Honeypot:   {report.honeypot_id}")
+    print(f"Uptime:     {report.uptime_seconds:.0f}s")
+
+    if report.services:
+        print(f"\nServices:")
+        for name, svc in report.services.items():
+            svc_icon = "UP" if svc.status == "up" else "DOWN"
+            print(f"  {name}: {svc_icon}" + (f" ({svc.reason})" if svc.reason else ""))
+
+    if report.resources:
+        r = report.resources
+        print(f"\nResources:")
+        print(f"  CPU:    {r.cpu_percent:.1f}%")
+        print(f"  Memory: {r.memory_mb:.0f} MB ({r.memory_percent:.1f}%)")
+        print(f"  Disk:   {r.disk_percent:.1f}%")
+        print(f"  FDs:    {r.open_fds}")
+
+    if report.isolation:
+        iso = report.isolation
+        print(f"\nIsolation:")
+        print(f"  Egress blocked:       {'Yes' if iso.egress_blocked else 'NO - WARNING'}")
+        print(f"  No shared creds:      {'Yes' if iso.no_shared_credentials else 'NO - WARNING'}")
+        print(f"  Filesystem integrity:  {'Yes' if iso.filesystem_integrity else 'NO - WARNING'}")
+
+    if report.compromise_indicators:
+        print(f"\nCompromise Indicators ({len(report.compromise_indicators)}):")
+        for ci in report.compromise_indicators:
+            print(f"  [{ci.severity.upper()}] {ci.description}")
 
 
 def cli():
@@ -803,6 +871,13 @@ def cli():
     logs_verify_parser.add_argument('key', help='S3 object key to verify')
     logs_verify_parser.add_argument('--json', '-j', action='store_true', help='Output as JSON')
     logs_verify_parser.set_defaults(func=cmd_logs_verify)
+    
+    # === Health command ===
+    health_parser = subparsers.add_parser('health', help='Run health check')
+    health_parser.add_argument('--json', '-j', action='store_true', help='Output as JSON')
+    health_parser.add_argument('--services', '-s',
+                               help='Services to check (name:port,...). e.g. ssh:22,api:8080')
+    health_parser.set_defaults(func=cmd_health)
 
     args = parser.parse_args()
 
