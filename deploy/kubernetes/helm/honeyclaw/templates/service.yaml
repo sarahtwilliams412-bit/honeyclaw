@@ -1,0 +1,24 @@
+{{- range .Values.templates }}
+{{- if .enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: honeyclaw-{{ .name }}
+  labels:
+    app: honeyclaw
+    template: {{ .name }}
+spec:
+  type: LoadBalancer
+  selector:
+    app: honeyclaw
+    template: {{ .name }}
+  ports:
+    {{- range .ports }}
+    - name: {{ .name }}
+      port: {{ .servicePort }}
+      targetPort: {{ .containerPort }}
+      protocol: {{ .protocol | default "TCP" }}
+    {{- end }}
+{{- end }}
+{{- end }}

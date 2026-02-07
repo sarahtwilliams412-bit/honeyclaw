@@ -1,0 +1,36 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- range .Values.templates }}
+{{- if .enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: honeyclaw-{{ .name }}
+  labels:
+    app: honeyclaw
+    template: {{ .name }}
+spec:
+  podSelector:
+    matchLabels:
+      app: honeyclaw
+      template: {{ .name }}
+  policyTypes:
+    - Ingress
+    - Egress
+
+  # Allow all ingress (honeypot must accept attacker connections)
+  ingress:
+    - {}
+
+  # Restrict egress to logging and DNS only
+  egress:
+    {{- range $.Values.networkPolicy.egressRules }}
+    - ports:
+        {{- range .ports }}
+        - port: {{ .port }}
+          protocol: {{ .protocol }}
+        {{- end }}
+    {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
