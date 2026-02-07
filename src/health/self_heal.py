@@ -1,406 +1,501 @@
 #!/usr/bin/env python3
 """
-Honeyclaw Self-Healing Module
+Honeyclaw Self-Healing System
 
 Automated response to health check failures and compromise detection.
-Triggers container rebuilds, forensic snapshots, and SOC alerts.
-
-Environment variables:
-  HONEYCLAW_SELF_HEAL_ENABLED    - Enable self-healing (default: true)
-  HONEYCLAW_SNAPSHOT_DIR         - Forensic snapshot directory
-  HONEYCLAW_REBUILD_COMMAND      - Command to trigger container rebuild
-  HONEYCLAW_MAX_REBUILD_ATTEMPTS - Max rebuild attempts before alerting (default: 3)
+Triggers container rebuilds, alerts SOC teams, and captures forensic
+snapshots before teardown.
 """
 
 import json
+import logging
 import os
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from .monitor import CompromiseIndicator, HealthReport, HealthStatus
+from .monitor import HealthMonitor, HealthReport, HealthStatus, HealthConfig
 
 
-class HealAction(Enum):
-    """Self-healing action types."""
-    ALERT_ONLY = "alert_only"
-    RESTART_SERVICE = "restart_service"
-    SNAPSHOT_AND_REBUILD = "snapshot_and_rebuild"
-    ISOLATE_CONTAINER = "isolate_container"
-    EMERGENCY_SHUTDOWN = "emergency_shutdown"
+logger = logging.getLogger('honeyclaw.health.self_heal')
 
 
 @dataclass
-class HealEvent:
-    """Record of a self-healing action taken."""
-    action: HealAction
-    trigger: str
-    success: bool
-    message: str
-    timestamp: str = ""
-    details: Dict[str, Any] = field(default_factory=dict)
+class SelfHealConfig:
+    """Configuration for self-healing responses."""
+    enabled: bool = True
+    auto_rebuild_on_compromise: bool = True
+    alert_on_degraded: bool = True
+    alert_on_compromise: bool = True
+    forensic_snapshot_enabled: bool = True
+    forensic_snapshot_path: str = '/var/lib/honeyclaw/forensics'
+    rebuild_command: str = ''
+    rebuild_timeout_sec: int = 300
+    max_rebuild_attempts: int = 3
+    rebuild_cooldown_sec: int = 600  # Min time between rebuilds
 
-    def __post_init__(self):
-        if not self.timestamp:
-            self.timestamp = datetime.now(timezone.utc).isoformat()
+    @classmethod
+    def from_env(cls) -> 'SelfHealConfig':
+        """Create config from environment variables."""
+        return cls(
+            enabled=os.environ.get('SELF_HEAL_ENABLED', 'true').lower() == 'true',
+            auto_rebuild_on_compromise=os.environ.get(
+                'SELF_HEAL_AUTO_REBUILD', 'true'
+            ).lower() == 'true',
+            alert_on_degraded=os.environ.get(
+                'SELF_HEAL_ALERT_DEGRADED', 'true'
+            ).lower() == 'true',
+            alert_on_compromise=os.environ.get(
+                'SELF_HEAL_ALERT_COMPROMISE', 'true'
+            ).lower() == 'true',
+            forensic_snapshot_enabled=os.environ.get(
+                'SELF_HEAL_FORENSIC_SNAPSHOT', 'true'
+            ).lower() == 'true',
+            forensic_snapshot_path=os.environ.get(
+                'SELF_HEAL_FORENSIC_PATH', '/var/lib/honeyclaw/forensics'
+            ),
+            rebuild_command=os.environ.get('SELF_HEAL_REBUILD_COMMAND', ''),
+            rebuild_timeout_sec=int(os.environ.get('SELF_HEAL_REBUILD_TIMEOUT', '300')),
+            max_rebuild_attempts=int(os.environ.get('SELF_HEAL_MAX_REBUILDS', '3')),
+            rebuild_cooldown_sec=int(os.environ.get('SELF_HEAL_REBUILD_COOLDOWN', '600')),
+        )
+
+
+@dataclass
+class HealAction:
+    """Record of a self-healing action taken."""
+    action_type: str  # 'alert', 'snapshot', 'rebuild'
+    trigger: str  # What triggered this action
+    success: bool
+    message: str = ""
+    details: Dict[str, Any] = field(default_factory=dict)
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "action": self.action.value,
-            "trigger": self.trigger,
-            "success": self.success,
-            "message": self.message,
-            "timestamp": self.timestamp,
-            "details": self.details,
+            'action_type': self.action_type,
+            'trigger': self.trigger,
+            'success': self.success,
+            'message': self.message,
+            'details': self.details,
+            'timestamp': self.timestamp,
         }
 
 
 class SelfHealer:
     """
-    Automated response to health check failures.
+    Automated response system for health check failures.
 
-    Listens for compromise indicators and degraded health reports,
-    then takes appropriate action based on severity.
+    Handles:
+    - Alerting SOC teams on anomalies
+    - Capturing forensic snapshots before teardown
+    - Triggering container rebuilds on compromise detection
+    - Rate-limiting rebuild attempts
+
+    Usage:
+        healer = SelfHealer(config=SelfHealConfig.from_env())
+        healer.handle_report(health_report)
+
+        # Or integrate with HealthMonitor:
+        monitor = HealthMonitor(
+            on_compromise=healer.handle_compromise,
+            on_degraded=healer.handle_degraded,
+        )
     """
 
     def __init__(
         self,
-        enabled: Optional[bool] = None,
-        snapshot_dir: Optional[str] = None,
-        rebuild_command: Optional[str] = None,
-        max_rebuild_attempts: int = 3,
-        on_alert: Optional[Callable[[str, Dict[str, Any]], None]] = None,
-        audit_log_path: Optional[str] = None,
+        config: Optional[SelfHealConfig] = None,
+        alert_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ):
-        if enabled is not None:
-            self.enabled = enabled
-        else:
-            self.enabled = os.environ.get("HONEYCLAW_SELF_HEAL_ENABLED", "true").lower() == "true"
+        self.config = config or SelfHealConfig.from_env()
+        self.alert_callback = alert_callback
 
-        self.snapshot_dir = Path(
-            snapshot_dir or os.environ.get("HONEYCLAW_SNAPSHOT_DIR", "/var/lib/honeyclaw/snapshots")
-        )
-        self.rebuild_command = rebuild_command or os.environ.get(
-            "HONEYCLAW_REBUILD_COMMAND", ""
-        )
-        self.max_rebuild_attempts = int(
-            os.environ.get("HONEYCLAW_MAX_REBUILD_ATTEMPTS", str(max_rebuild_attempts))
-        )
-        self.on_alert = on_alert
-        self.audit_log_path = Path(
-            audit_log_path or os.environ.get(
-                "HONEYCLAW_HEAL_AUDIT_LOG", "/var/log/honeyclaw/self_heal.json"
-            )
-        )
+        self._action_log: List[HealAction] = []
+        self._last_rebuild_time: float = 0
+        self._rebuild_attempts: int = 0
+        self._lock = threading.Lock()
 
-        self._rebuild_attempts = 0
-        self._heal_history: List[HealEvent] = []
+        # Try to import alerting system
+        self._alert_func = None
+        try:
+            from src.alerts.dispatcher import alert as send_alert
+            if os.environ.get('ALERT_WEBHOOK_URL'):
+                self._alert_func = send_alert
+        except ImportError:
+            pass
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+    def handle_report(self, report: HealthReport):
+        """
+        Handle a health report and take appropriate action.
 
-    def handle_compromise(self, indicator: CompromiseIndicator) -> HealEvent:
-        """Handle a detected compromise indicator."""
-        if not self.enabled:
-            return self._record_event(
-                HealAction.ALERT_ONLY,
-                trigger=indicator.indicator_type,
-                success=True,
-                message="Self-healing disabled; alert only",
-                details=indicator.to_dict(),
-            )
+        This is the main entry point for self-healing logic.
+        """
+        if not self.config.enabled:
+            return
 
-        # Determine action based on severity
-        action = self._select_action(indicator)
+        if report.status == HealthStatus.COMPROMISED:
+            self.handle_compromise(report)
+        elif report.status == HealthStatus.DEGRADED:
+            self.handle_degraded(report)
 
-        if action == HealAction.ALERT_ONLY:
-            return self._do_alert(indicator)
-        elif action == HealAction.RESTART_SERVICE:
-            return self._do_restart(indicator)
-        elif action == HealAction.SNAPSHOT_AND_REBUILD:
-            return self._do_snapshot_and_rebuild(indicator)
-        elif action == HealAction.ISOLATE_CONTAINER:
-            return self._do_isolate(indicator)
-        elif action == HealAction.EMERGENCY_SHUTDOWN:
-            return self._do_emergency_shutdown(indicator)
-
-        return self._do_alert(indicator)
-
-    def handle_degraded(self, report: HealthReport) -> HealEvent:
-        """Handle a degraded health report."""
-        if not self.enabled:
-            return self._record_event(
-                HealAction.ALERT_ONLY,
-                trigger="health_degraded",
-                success=True,
-                message="Health degraded; self-healing disabled",
-            )
-
-        # Check which services are down
-        down_services = [
-            name for name, svc in report.services.items() if svc.status == "down"
-        ]
-
-        if down_services:
-            self._fire_alert(
-                "service_degraded",
-                {
-                    "down_services": down_services,
-                    "status": report.status.value,
-                    "resources": report.resources.to_dict() if report.resources else {},
-                },
-            )
-
-        return self._record_event(
-            HealAction.ALERT_ONLY,
-            trigger="health_degraded",
-            success=True,
-            message=f"Services down: {down_services}",
-            details={"down_services": down_services},
+    def handle_compromise(self, report: HealthReport):
+        """Handle a compromise detection."""
+        logger.critical(
+            f"COMPROMISE DETECTED on {report.honeypot_id}: "
+            f"{len(report.compromise_indicators)} indicator(s)"
         )
 
-    def get_history(self, limit: int = 50) -> List[Dict[str, Any]]:
-        """Get recent self-healing event history."""
-        return [e.to_dict() for e in self._heal_history[-limit:]]
+        # 1. Alert SOC immediately
+        if self.config.alert_on_compromise:
+            self._send_compromise_alert(report)
 
-    # ------------------------------------------------------------------
-    # Action implementations
-    # ------------------------------------------------------------------
-
-    def _select_action(self, indicator: CompromiseIndicator) -> HealAction:
-        """Select the appropriate healing action based on indicator severity."""
-        severity = indicator.severity
-        itype = indicator.indicator_type
-
-        if severity == "critical":
-            if itype in ("suspicious_cron", "rootkit_detected"):
-                return HealAction.SNAPSHOT_AND_REBUILD
-            return HealAction.SNAPSHOT_AND_REBUILD
-
-        if severity == "high":
-            if itype == "unexpected_listener":
-                return HealAction.SNAPSHOT_AND_REBUILD
-            if itype == "unexpected_process":
-                return HealAction.ALERT_ONLY
-            return HealAction.ALERT_ONLY
-
-        return HealAction.ALERT_ONLY
-
-    def _do_alert(self, indicator: CompromiseIndicator) -> HealEvent:
-        """Alert without taking destructive action."""
-        self._fire_alert(
-            f"compromise_detected:{indicator.indicator_type}",
-            indicator.to_dict(),
-        )
-        return self._record_event(
-            HealAction.ALERT_ONLY,
-            trigger=indicator.indicator_type,
-            success=True,
-            message=f"Alert sent: {indicator.description}",
-            details=indicator.to_dict(),
-        )
-
-    def _do_restart(self, indicator: CompromiseIndicator) -> HealEvent:
-        """Restart the affected service."""
-        self._fire_alert(
-            f"service_restart:{indicator.indicator_type}",
-            indicator.to_dict(),
-        )
-        return self._record_event(
-            HealAction.RESTART_SERVICE,
-            trigger=indicator.indicator_type,
-            success=True,
-            message=f"Service restart requested: {indicator.description}",
-            details=indicator.to_dict(),
-        )
-
-    def _do_snapshot_and_rebuild(self, indicator: CompromiseIndicator) -> HealEvent:
-        """Take forensic snapshot then trigger rebuild."""
-        if self._rebuild_attempts >= self.max_rebuild_attempts:
-            self._fire_alert(
-                "max_rebuilds_exceeded",
-                {
-                    "attempts": self._rebuild_attempts,
-                    "indicator": indicator.to_dict(),
-                },
-            )
-            return self._record_event(
-                HealAction.EMERGENCY_SHUTDOWN,
-                trigger=indicator.indicator_type,
-                success=False,
-                message=f"Max rebuild attempts ({self.max_rebuild_attempts}) exceeded",
-            )
-
-        # 1. Take snapshot
-        snapshot_success = self._take_snapshot(indicator)
-
-        # 2. Alert SOC
-        self._fire_alert(
-            "compromise_rebuild",
-            {
-                "indicator": indicator.to_dict(),
-                "snapshot_taken": snapshot_success,
-                "rebuild_attempt": self._rebuild_attempts + 1,
-            },
-        )
+        # 2. Capture forensic snapshot
+        if self.config.forensic_snapshot_enabled:
+            self._capture_forensic_snapshot(report)
 
         # 3. Trigger rebuild
-        rebuild_success = self._trigger_rebuild()
-        self._rebuild_attempts += 1
+        if self.config.auto_rebuild_on_compromise:
+            self._trigger_rebuild(report, reason='compromise_detected')
 
-        return self._record_event(
-            HealAction.SNAPSHOT_AND_REBUILD,
-            trigger=indicator.indicator_type,
-            success=rebuild_success,
-            message=f"Snapshot: {'OK' if snapshot_success else 'FAIL'}, "
-                    f"Rebuild: {'OK' if rebuild_success else 'FAIL'}",
-            details={
-                "snapshot_taken": snapshot_success,
-                "rebuild_triggered": rebuild_success,
-                "attempt": self._rebuild_attempts,
-            },
+    def handle_degraded(self, report: HealthReport):
+        """Handle a degraded state."""
+        logger.warning(
+            f"DEGRADED state on {report.honeypot_id}: "
+            f"{len(report.compromise_indicators)} indicator(s), "
+            f"{sum(1 for s in report.services if s.status.name == 'DOWN')} service(s) down"
         )
 
-    def _do_isolate(self, indicator: CompromiseIndicator) -> HealEvent:
-        """Isolate the container from the network."""
-        self._fire_alert(
-            "container_isolated",
-            indicator.to_dict(),
-        )
-        return self._record_event(
-            HealAction.ISOLATE_CONTAINER,
-            trigger=indicator.indicator_type,
-            success=True,
-            message="Container isolation requested",
-            details=indicator.to_dict(),
-        )
+        if self.config.alert_on_degraded:
+            self._send_degraded_alert(report)
 
-    def _do_emergency_shutdown(self, indicator: CompromiseIndicator) -> HealEvent:
-        """Emergency shutdown - alert and halt."""
-        self._fire_alert(
-            "emergency_shutdown",
-            {
-                "indicator": indicator.to_dict(),
-                "message": "Emergency shutdown triggered - manual intervention required",
-            },
-        )
-        return self._record_event(
-            HealAction.EMERGENCY_SHUTDOWN,
-            trigger=indicator.indicator_type,
-            success=True,
-            message="Emergency shutdown initiated",
-            details=indicator.to_dict(),
-        )
+    def get_action_log(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Get recent self-healing action log."""
+        with self._lock:
+            actions = self._action_log[-limit:]
+        return [a.to_dict() for a in reversed(actions)]
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
+    def get_stats(self) -> Dict[str, Any]:
+        """Get self-healing statistics."""
+        with self._lock:
+            return {
+                'total_actions': len(self._action_log),
+                'rebuild_attempts': self._rebuild_attempts,
+                'last_rebuild_time': (
+                    datetime.fromtimestamp(
+                        self._last_rebuild_time, tz=timezone.utc
+                    ).isoformat()
+                    if self._last_rebuild_time > 0
+                    else None
+                ),
+                'actions_by_type': self._count_actions_by_type(),
+                'config': {
+                    'enabled': self.config.enabled,
+                    'auto_rebuild': self.config.auto_rebuild_on_compromise,
+                    'forensic_snapshots': self.config.forensic_snapshot_enabled,
+                },
+            }
 
-    def _take_snapshot(self, indicator: CompromiseIndicator) -> bool:
-        """Take a forensic snapshot of the current container state."""
+    # === Alert Sending ===
+
+    def _send_compromise_alert(self, report: HealthReport):
+        """Send critical alert for compromise detection."""
+        event = {
+            'event': 'honeypot_compromised',
+            'honeypot_id': report.honeypot_id,
+            'status': report.status.name,
+            'indicators': [i.to_dict() for i in report.compromise_indicators],
+            'services': {s.name: s.status.name for s in report.services},
+            'timestamp': report.last_check,
+        }
+
+        success = self._dispatch_alert(event, 'health_compromise')
+
+        self._record_action(HealAction(
+            action_type='alert',
+            trigger='compromise_detected',
+            success=success,
+            message='Compromise alert sent to SOC' if success else 'Failed to send alert',
+            details={'indicator_count': len(report.compromise_indicators)},
+        ))
+
+    def _send_degraded_alert(self, report: HealthReport):
+        """Send warning alert for degraded state."""
+        down_services = [s.name for s in report.services if s.status.name == 'DOWN']
+
+        event = {
+            'event': 'honeypot_degraded',
+            'honeypot_id': report.honeypot_id,
+            'status': report.status.name,
+            'down_services': down_services,
+            'indicators': [i.to_dict() for i in report.compromise_indicators],
+            'timestamp': report.last_check,
+        }
+
+        success = self._dispatch_alert(event, 'health_degraded')
+
+        self._record_action(HealAction(
+            action_type='alert',
+            trigger='degraded_state',
+            success=success,
+            message='Degraded alert sent' if success else 'Failed to send alert',
+            details={'down_services': down_services},
+        ))
+
+    def _dispatch_alert(self, event: Dict[str, Any], event_type: str) -> bool:
+        """Send alert through available channels."""
+        sent = False
+
+        # Try the built-in alert system
+        if self._alert_func:
+            try:
+                self._alert_func(event, event_type)
+                sent = True
+            except Exception as e:
+                logger.error(f"Failed to send alert via dispatcher: {e}")
+
+        # Try the custom callback
+        if self.alert_callback:
+            try:
+                self.alert_callback(event)
+                sent = True
+            except Exception as e:
+                logger.error(f"Failed to send alert via callback: {e}")
+
+        if not sent:
+            # Last resort: log it
+            logger.critical(f"ALERT ({event_type}): {json.dumps(event)}")
+
+        return sent
+
+    # === Forensic Snapshot ===
+
+    def _capture_forensic_snapshot(self, report: HealthReport) -> bool:
+        """
+        Capture system state for forensic analysis before teardown.
+
+        Collects:
+        - Running processes
+        - Network connections
+        - File listing of key directories
+        - Environment variables (sanitized)
+        - Health report
+        """
+        snapshot_dir = Path(self.config.forensic_snapshot_path)
+        timestamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+        snapshot_path = snapshot_dir / f"snapshot_{report.honeypot_id}_{timestamp}"
+
         try:
-            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            snap_dir = self.snapshot_dir / ts
-            snap_dir.mkdir(parents=True, exist_ok=True)
+            snapshot_path.mkdir(parents=True, exist_ok=True)
 
-            # Save indicator details
-            (snap_dir / "indicator.json").write_text(
-                json.dumps(indicator.to_dict(), indent=2)
+            # Save health report
+            report_path = snapshot_path / 'health_report.json'
+            report_path.write_text(json.dumps(report.to_dict(), indent=2))
+
+            # Capture process list
+            self._capture_command(
+                ['ps', 'auxww'],
+                snapshot_path / 'processes.txt',
             )
 
-            # Save process list
-            try:
-                result = subprocess.run(
-                    ["ps", "auxf"],
-                    capture_output=True, text=True, timeout=10,
-                )
-                (snap_dir / "processes.txt").write_text(result.stdout)
-            except Exception:
-                pass
+            # Capture network connections
+            self._capture_command(
+                ['ss', '-tlnp'],
+                snapshot_path / 'network_connections.txt',
+            )
 
-            # Save network state
-            try:
-                result = subprocess.run(
-                    ["ss", "-tlnp"],
-                    capture_output=True, text=True, timeout=10,
-                )
-                (snap_dir / "network.txt").write_text(result.stdout)
-            except Exception:
-                pass
+            # Capture network stats
+            self._capture_command(
+                ['ss', '-s'],
+                snapshot_path / 'network_stats.txt',
+            )
 
-            # Save cron state
-            try:
-                cron_files = []
-                for cron_path in ["/etc/crontab", "/var/spool/cron/crontabs/root"]:
-                    p = Path(cron_path)
-                    if p.exists():
-                        cron_files.append(f"=== {cron_path} ===\n{p.read_text()}")
-                (snap_dir / "cron.txt").write_text("\n".join(cron_files))
-            except Exception:
-                pass
+            # Capture environment (sanitize secrets)
+            env_data = {}
+            for key, value in os.environ.items():
+                if any(s in key.upper() for s in ['SECRET', 'PASSWORD', 'TOKEN', 'KEY', 'CREDENTIAL']):
+                    env_data[key] = '***REDACTED***'
+                else:
+                    env_data[key] = value
+            env_path = snapshot_path / 'environment.json'
+            env_path.write_text(json.dumps(env_data, indent=2))
 
+            # Capture file listing of /tmp and home
+            self._capture_command(
+                ['ls', '-laR', '/tmp'],
+                snapshot_path / 'tmp_listing.txt',
+            )
+
+            logger.info(f"Forensic snapshot captured: {snapshot_path}")
+
+            self._record_action(HealAction(
+                action_type='snapshot',
+                trigger='compromise_detected',
+                success=True,
+                message=f'Forensic snapshot saved to {snapshot_path}',
+                details={'path': str(snapshot_path)},
+            ))
             return True
+
         except Exception as e:
-            print(f"[SELF-HEAL] Snapshot failed: {e}", flush=True)
+            logger.error(f"Failed to capture forensic snapshot: {e}")
+            self._record_action(HealAction(
+                action_type='snapshot',
+                trigger='compromise_detected',
+                success=False,
+                message=f'Snapshot failed: {e}',
+            ))
             return False
 
-    def _trigger_rebuild(self) -> bool:
-        """Trigger a container rebuild."""
-        if not self.rebuild_command:
-            print("[SELF-HEAL] No rebuild command configured", flush=True)
+    def _capture_command(self, cmd: List[str], output_path: Path):
+        """Run a command and save output to file."""
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            output_path.write_text(result.stdout)
+            if result.stderr:
+                stderr_path = output_path.with_suffix('.stderr')
+                stderr_path.write_text(result.stderr)
+        except (subprocess.TimeoutExpired, OSError, FileNotFoundError) as e:
+            output_path.write_text(f"Command failed: {e}\n")
+
+    # === Container Rebuild ===
+
+    def _trigger_rebuild(self, report: HealthReport, reason: str) -> bool:
+        """
+        Trigger a container rebuild.
+
+        Respects cooldown period and max rebuild attempts.
+        """
+        if not self.config.rebuild_command:
+            logger.warning("Rebuild requested but no rebuild command configured "
+                           "(set SELF_HEAL_REBUILD_COMMAND)")
+            self._record_action(HealAction(
+                action_type='rebuild',
+                trigger=reason,
+                success=False,
+                message='No rebuild command configured',
+            ))
             return False
+
+        current_time = time.time()
+
+        with self._lock:
+            # Check cooldown
+            elapsed = current_time - self._last_rebuild_time
+            if elapsed < self.config.rebuild_cooldown_sec:
+                remaining = self.config.rebuild_cooldown_sec - elapsed
+                cooldown_msg = f'Rebuild cooldown active ({remaining:.0f}s remaining)'
+                logger.warning(cooldown_msg)
+                # Record action outside the lock to avoid deadlock
+                action = HealAction(
+                    action_type='rebuild',
+                    trigger=reason,
+                    success=False,
+                    message=cooldown_msg,
+                )
+                self._action_log.append(action)
+                return False
+
+            # Check max attempts
+            if self._rebuild_attempts >= self.config.max_rebuild_attempts:
+                max_msg = f'Max rebuild attempts reached ({self.config.max_rebuild_attempts})'
+                logger.error(max_msg)
+                action = HealAction(
+                    action_type='rebuild',
+                    trigger=reason,
+                    success=False,
+                    message=max_msg,
+                )
+                self._action_log.append(action)
+                return False
+
+            self._rebuild_attempts += 1
+            self._last_rebuild_time = current_time
+
+        # Execute rebuild
+        logger.critical(f"Triggering container rebuild (reason: {reason})")
 
         try:
             result = subprocess.run(
-                self.rebuild_command,
+                self.config.rebuild_command,
                 shell=True,
                 capture_output=True,
                 text=True,
-                timeout=120,
+                timeout=self.config.rebuild_timeout_sec,
             )
-            return result.returncode == 0
+
+            success = result.returncode == 0
+
+            self._record_action(HealAction(
+                action_type='rebuild',
+                trigger=reason,
+                success=success,
+                message=(
+                    'Rebuild completed successfully'
+                    if success
+                    else f'Rebuild failed (exit code {result.returncode})'
+                ),
+                details={
+                    'exit_code': result.returncode,
+                    'stdout': result.stdout[:500] if result.stdout else '',
+                    'stderr': result.stderr[:500] if result.stderr else '',
+                },
+            ))
+
+            if success:
+                logger.info("Container rebuild completed successfully")
+            else:
+                logger.error(
+                    f"Container rebuild failed (exit code {result.returncode}): "
+                    f"{result.stderr[:200]}"
+                )
+
+            return success
+
+        except subprocess.TimeoutExpired:
+            logger.error(
+                f"Container rebuild timed out after {self.config.rebuild_timeout_sec}s"
+            )
+            self._record_action(HealAction(
+                action_type='rebuild',
+                trigger=reason,
+                success=False,
+                message=f'Rebuild timed out after {self.config.rebuild_timeout_sec}s',
+            ))
+            return False
         except Exception as e:
-            print(f"[SELF-HEAL] Rebuild failed: {e}", flush=True)
+            logger.error(f"Container rebuild failed: {e}")
+            self._record_action(HealAction(
+                action_type='rebuild',
+                trigger=reason,
+                success=False,
+                message=f'Rebuild error: {e}',
+            ))
             return False
 
-    def _fire_alert(self, event_type: str, data: Dict[str, Any]):
-        """Fire an alert callback."""
-        if self.on_alert:
-            try:
-                self.on_alert(event_type, data)
-            except Exception as e:
-                print(f"[SELF-HEAL] Alert callback failed: {e}", flush=True)
+    # === Internal Helpers ===
 
-    def _record_event(
-        self,
-        action: HealAction,
-        trigger: str,
-        success: bool,
-        message: str,
-        details: Optional[Dict[str, Any]] = None,
-    ) -> HealEvent:
-        """Record a healing event to history and audit log."""
-        event = HealEvent(
-            action=action,
-            trigger=trigger,
-            success=success,
-            message=message,
-            details=details or {},
-        )
-        self._heal_history.append(event)
+    def _record_action(self, action: HealAction):
+        """Record a self-healing action."""
+        with self._lock:
+            self._action_log.append(action)
+            # Keep log bounded
+            if len(self._action_log) > 1000:
+                self._action_log = self._action_log[-500:]
 
-        # Write to audit log
-        try:
-            self.audit_log_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.audit_log_path, "a") as f:
-                f.write(json.dumps(event.to_dict()) + "\n")
-        except Exception:
-            pass
-
-        return event
+    def _count_actions_by_type(self) -> Dict[str, int]:
+        """Count actions by type."""
+        counts: Dict[str, int] = {}
+        for action in self._action_log:
+            counts[action.action_type] = counts.get(action.action_type, 0) + 1
+        return counts
