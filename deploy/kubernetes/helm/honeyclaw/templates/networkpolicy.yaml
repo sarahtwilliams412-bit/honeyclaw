@@ -1,0 +1,41 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "honeyclaw.fullname" . }}
+  labels:
+    {{- include "honeyclaw.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "honeyclaw.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  # Allow all inbound (honeypot must accept attacker connections)
+  ingress:
+    - {}
+  egress:
+    # Allow DNS resolution
+    {{- if .Values.networkPolicy.egressDNS }}
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- end }}
+    # Allow egress to specific CIDRs only (SIEM, logging)
+    {{- if .Values.networkPolicy.egressCIDRs }}
+    - to:
+        {{- range .Values.networkPolicy.egressCIDRs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 514
+    {{- end }}
+{{- end }}

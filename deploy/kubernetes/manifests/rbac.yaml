@@ -1,0 +1,37 @@
+# RBAC for the rotation CronJob to restart deployments
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: honeyclaw-rotator
+  namespace: honeyclaw
+  labels:
+    app.kubernetes.io/name: honeyclaw
+    app.kubernetes.io/component: rotation
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: honeyclaw-rotator
+  namespace: honeyclaw
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/status"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: honeyclaw-rotator
+  namespace: honeyclaw
+subjects:
+  - kind: ServiceAccount
+    name: honeyclaw-rotator
+    namespace: honeyclaw
+roleRef:
+  kind: Role
+  name: honeyclaw-rotator
+  apiGroup: rbac.authorization.k8s.io

@@ -34,7 +34,7 @@ See [docs/IMPROVEMENT-PLAN.md](docs/IMPROVEMENT-PLAN.md) for the full implementa
 | # | Improvement | Impact | Effort | Priority | Gap Severity |
 |---|-------------|--------|--------|----------|-------------|
 | 11 | Health Monitoring & Compromise Detection | 🔥🔥🔥 | Medium | **P0** | CRITICAL |
-| 12 | Infrastructure-as-Code (Terraform/Helm) | 🔥🔥🔥 | High | **P0** | HIGH |
+| 12 | Infrastructure-as-Code (Terraform/Helm) | 🔥🔥🔥 | High | **P0** ✅ DONE | HIGH |
 | 13 | Network Isolation Enforcement (AppArmor/Seccomp) | 🔥🔥🔥 | Medium | **P0** | HIGH |
 | 14 | Stateful Shell Emulation & Fake Filesystem | 🔥🔥🔥 | High | **P1** | HIGH |
 | 15 | AI Adaptive Deception (Sophistication Classifier) | 🔥🔥🔥 | High | **P1** | HIGH |
@@ -378,7 +378,7 @@ auto_report:
 
 **Phase 1 - Critical Security (Weeks 1-2):**
 - [ ] #11 Health monitoring & compromise detection
-- [ ] #12 Infrastructure-as-Code (Terraform + Helm)
+- [x] #12 Infrastructure-as-Code (Terraform + Helm) ✅ DONE
 - [ ] #13 Network isolation enforcement (AppArmor, Seccomp)
 
 **Phase 2 - Enhanced Intelligence (Weeks 3-4):**
