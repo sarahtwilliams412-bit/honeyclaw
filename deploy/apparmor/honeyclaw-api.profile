@@ -1,59 +1,116 @@
-# =============================================================================
-# Honeyclaw AppArmor Profile - API Honeypot
-#
-# Restricts the API (Node.js) honeypot container.
-# Install: sudo apparmor_parser -r -W honeyclaw-api.profile
-# =============================================================================
-
 #include <tunables/global>
+
+# AppArmor profile for HoneyClaw Fake API honeypot containers.
+# Restricts filesystem access, network capabilities, and system calls
+# to the minimum required for the Node.js REST API honeypot.
 
 profile honeyclaw-api flags=(attach_disconnected,mediate_deleted) {
   #include <abstractions/base>
   #include <abstractions/nameservice>
 
-  # Network: allow HTTP/HTTPS and health
-  network inet  stream,
-  network inet6 stream,
-  network inet  dgram,
-  network inet6 dgram,
+  # Network: allow TCP for HTTP serving and established connections
+  network inet tcp,
+  network inet6 tcp,
 
+  # DNS resolution for log shipping / SIEM integration
+  network inet udp,
+  network inet6 udp,
+
+  # Deny raw sockets
   deny network raw,
   deny network packet,
 
-  # Node.js execution
+  # Filesystem - read-only access to application files
+  /app/** r,
+  /app/node_modules/** r,
+  /app/node_modules/.package-lock.json r,
+  /usr/** r,
+  /lib/** r,
+  /lib64/** r,
+  /etc/ld.so.cache r,
+  /etc/ld.so.preload r,
+  /etc/nsswitch.conf r,
+  /etc/ssl/** r,
+  /etc/resolv.conf r,
+  /etc/hosts r,
+  /etc/localtime r,
+  /etc/passwd r,
+  /etc/group r,
+
+  # Node.js runtime
+  /usr/local/bin/node ix,
   /usr/bin/node rix,
-  /usr/local/bin/node rix,
+  /usr/local/lib/node_modules/** r,
   /usr/lib/nodejs/** r,
 
-  # Honeypot application
+  # Honeypot application (both paths for compatibility)
   /opt/honeyclaw/** r,
   /opt/honeyclaw/templates/fake-api/** r,
   /opt/honeyclaw/node_modules/** r,
 
-  # Writable paths
+  # Logging - write access only to honeypot log directory
+  /var/log/honeypot/** rw,
+  /var/log/honeypot/ r,
   /var/log/honeyclaw/** rw,
   /var/lib/honeyclaw/** rw,
+
+  # Temporary files needed by Node.js
   /tmp/** rw,
+  /tmp/ r,
 
-  # Read-only proc
-  /proc/loadavg r,
-  /proc/meminfo r,
+  # /proc and /sys - limited read access
+  @{PROC}/sys/kernel/random/uuid r,
+  @{PROC}/sys/kernel/hostname r,
+  @{PROC}/meminfo r,
+  @{PROC}/cpuinfo r,
+  @{PROC}/loadavg r,
+  @{PROC}/self/fd/ r,
+  @{PROC}/self/maps r,
   @{PROC}/@{pid}/fd/ r,
+  owner @{PROC}/self/status r,
 
-  # Deny sensitive operations
+  # Deny sensitive filesystem areas
+  deny /etc/shadow r,
+  deny /root/** rw,
+  deny /home/** rw,
+  deny /boot/** rw,
+  deny /sys/firmware/** r,
+  deny /sys/kernel/security/** r,
+
+  # Deny container escape vectors
+  deny /proc/sysrq-trigger rw,
+  deny /proc/sys/kernel/core_pattern rw,
+  deny /proc/sys/kernel/modprobe rw,
+  deny /proc/kcore r,
+  deny /proc/kmem rw,
   deny /proc/*/mem rw,
   deny /proc/*/root/** rw,
+  deny /sys/fs/cgroup/** w,
+  deny /sys/devices/virtual/dmi/** r,
+
+  # Deny mount operations
   deny mount,
   deny umount,
   deny pivot_root,
+
+  # Deny ptrace
   deny ptrace,
+
+  # Deny loading kernel modules
+  deny @{PROC}/sys/kernel/modules_disabled w,
+
+  # Deny access to Docker socket
   deny /var/run/docker.sock rw,
   deny /run/docker.sock rw,
 
+  # Deny dangerous capabilities
   deny capability sys_admin,
   deny capability sys_ptrace,
   deny capability sys_module,
   deny capability sys_rawio,
   deny capability net_admin,
   deny capability sys_boot,
+
+  # Signal handling - only to own processes
+  signal (send,receive) peer=honeyclaw-api,
 }

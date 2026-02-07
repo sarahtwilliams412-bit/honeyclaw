@@ -24,7 +24,7 @@
 | 1 | AI Conversational Deception | 🔥🔥🔥 | High | P0 |
 | 2 | Geo-Distributed Mesh | 🔥🔥🔥 | Medium | ✅ DONE |
 | 4 | Attacker Fingerprinting | 🔥🔥🔥 | Medium | ✅ DONE |
-| 5 | SIEM/SOAR Integration | 🔥🔥 | Medium | Partial (SIEM ✅, SOAR pending) |
+| 5 | SIEM/SOAR Integration | 🔥🔥 | Medium | ✅ DONE |
 | 6 | Canary Token Generator | 🔥🔥 | Low | ✅ DONE |
 
 ### New Improvements Identified (Gap Analysis 2026-02-07)
@@ -42,7 +42,7 @@ See [docs/IMPROVEMENT-PLAN.md](docs/IMPROVEMENT-PLAN.md) for the full implementa
 | 17 | Log Correlation IDs & Immutability (S3 Object Lock) | 🔥🔥 | Medium | ✅ DONE | MEDIUM |
 | 18 | Anti-Fingerprinting Measures | 🔥🔥🔥 | High | **P1** | HIGH |
 | 19 | DDoS Protection & Global Rate Limits | 🔥🔥 | Medium | **P1** | MEDIUM |
-| 20 | SOAR Playbook Integration | 🔥🔥 | Medium | **P2** | MEDIUM |
+| 20 | SOAR Playbook Integration | 🔥🔥 | Medium | ✅ DONE | MEDIUM |
 | 21 | STIX/TAXII + MISP Threat Sharing | 🔥🔥 | Medium | **P2** | LOW |
 | 22 | Malware Analysis Pipeline | 🔥🔥🔥 | High | **P2** | MEDIUM |
 | 23 | Kubernetes Orchestration (Helm Chart) | 🔥🔥 | High | **P2** | MEDIUM |
@@ -173,26 +173,54 @@ Build unique profiles of attackers beyond IP address:
 
 ---
 
-### 5. 📊 SIEM/SOAR Integration
+### 5. 📊 SIEM/SOAR Integration ✅ IMPLEMENTED
 First-class connectors for enterprise security stacks:
 
-- **Splunk:** HEC (HTTP Event Collector) direct push
-- **Elastic:** Direct indexing to Elasticsearch
-- **Sentinel:** Azure Log Analytics workspace
-- **QRadar:** LEEF/CEF format support
-- **Chronicle:** Google SecOps ingestion
-- **Sumo Logic:** HTTP source
+**SIEM (Implemented Sprint 2):**
+- **Splunk:** HEC (HTTP Event Collector) direct push ✅
+- **Elastic:** Direct indexing to Elasticsearch ✅
+- **Sentinel:** Azure Log Analytics workspace ✅
+- **QRadar:** LEEF/CEF format support (via generic syslog) ✅
+- Pre-built detection rules for each SIEM platform ✅
 
+**SOAR (Implemented Sprint 3):**
+- **TheHive/Cortex:** Alert creation, case management, Cortex responder triggering ✅
+- **Splunk SOAR (Phantom):** Container/artifact creation, playbook triggering ✅
+- **Palo Alto XSOAR (Demisto):** Incident creation, indicator extraction, playbook triggering ✅
+- **Generic SOAR webhook:** Configurable payload templates for any SOAR platform ✅
+
+**Blocklist Feed:**
+- IP blocklist published in multiple formats (plain text, CSV, JSON, STIX 2.1) ✅
+- Confidence-based filtering with TTL auto-expiry ✅
+- Allowlist support for researchers/scanners ✅
+- HTTP feed server for firewall/IDS consumption ✅
+
+**Delivered:**
+- `src/integrations/` - SIEM connectors (Splunk, Elastic, Sentinel, Syslog)
+- `src/integrations/soar/` - SOAR connectors (Cortex, Phantom, XSOAR, Generic)
+- `src/feeds/blocklist.py` - Blocklist feed with HTTP server
+- `src/alerts/dispatcher.py` - Unified dispatch to webhooks + SOAR
+- `siem-rules/` - Pre-built detection rules for Splunk, Elastic, Sentinel, QRadar
+- 35 tests covering all SOAR connectors, blocklist feed, and dispatcher integration
+
+**Usage:**
 ```bash
-# Deploy with SIEM integration
-openclaw skill honeyclaw deploy \
-  --template enterprise-sim \
-  --siem splunk \
-  --siem-endpoint https://hec.splunk.example.com:8088 \
-  --siem-token ${SPLUNK_HEC_TOKEN}
-```
+# SIEM integration
+export SPLUNK_HEC_TOKEN="your-token"
+python -c "from src.integrations import get_connector; c = get_connector({'provider':'splunk','endpoint':'https://splunk:8088','token':'${SPLUNK_HEC_TOKEN}'})"
 
-**Bonus:** Pre-built detection rules for each SIEM platform.
+# SOAR integration
+export SOAR_PROVIDER=cortex
+export SOAR_ENDPOINT=https://thehive.example.com
+export SOAR_API_KEY=your-api-key
+# Alerts automatically dispatched to SOAR when configured
+
+# Blocklist feed
+python -c "from src.feeds.blocklist import BlocklistFeed; f = BlocklistFeed(); f.serve(port=8080)"
+# GET http://localhost:8080/blocklist.txt
+# GET http://localhost:8080/blocklist.json
+# GET http://localhost:8080/blocklist.stix
+```
 
 ---
 
@@ -401,7 +429,7 @@ auto_report:
 - [ ] #19 DDoS protection & global rate limits
 
 **Phase 4 - Ecosystem Integration (Weeks 7-8):**
-- [ ] #20 SOAR playbook integration
+- [x] #20 SOAR playbook integration ✅ DONE
 - [ ] #21 STIX/TAXII + MISP threat sharing
 - [ ] #22 Malware analysis pipeline
 
@@ -431,4 +459,4 @@ cd honeyclaw
 
 ---
 
-*Last updated: 2026-02-07 — Sprint 3 complete: Items #11-#17 implemented (health monitoring, IaC, network isolation, shell emulation, AI adaptive deception, MITRE ATT&CK mapping, log correlation)*
+*Last updated: 2026-02-07 — Sprint 3 complete: Items #11-#17 implemented + SOAR integration (TheHive/Cortex, Splunk SOAR, XSOAR, blocklist feed)*
