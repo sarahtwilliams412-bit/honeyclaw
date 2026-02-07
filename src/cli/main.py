@@ -529,13 +529,78 @@ def cmd_report_lookup(args):
     asyncio.run(do_lookup())
 
 
+def cmd_health(args):
+    """Run a health check"""
+    import asyncio
+    from src.health.monitor import HealthMonitor
+
+    # Parse services
+    services = {}
+    if args.services:
+        for svc in args.services.split(","):
+            parts = svc.strip().split(":")
+            if len(parts) == 2:
+                services[parts[0]] = int(parts[1])
+
+    monitor = HealthMonitor(
+        honeypot_id=os.environ.get('HONEYPOT_ID', 'honeyclaw'),
+        services=services,
+    )
+
+    report = asyncio.run(monitor.check())
+
+    if args.json:
+        print(report.to_json())
+        return
+
+    status_colors = {
+        "healthy": "\033[32m",     # green
+        "degraded": "\033[33m",    # yellow
+        "compromised": "\033[31m", # red
+        "unknown": "\033[90m",     # gray
+    }
+    reset = "\033[0m"
+    color = status_colors.get(report.status.value, "")
+
+    print(f"=== Honeyclaw Health Check ===\n")
+    print(f"Status:     {color}{report.status.value.upper()}{reset}")
+    print(f"Honeypot:   {report.honeypot_id}")
+    print(f"Uptime:     {report.uptime_seconds:.0f}s")
+
+    if report.services:
+        print(f"\nServices:")
+        for name, svc in report.services.items():
+            svc_icon = "UP" if svc.status == "up" else "DOWN"
+            print(f"  {name}: {svc_icon}" + (f" ({svc.reason})" if svc.reason else ""))
+
+    if report.resources:
+        r = report.resources
+        print(f"\nResources:")
+        print(f"  CPU:    {r.cpu_percent:.1f}%")
+        print(f"  Memory: {r.memory_mb:.0f} MB ({r.memory_percent:.1f}%)")
+        print(f"  Disk:   {r.disk_percent:.1f}%")
+        print(f"  FDs:    {r.open_fds}")
+
+    if report.isolation:
+        iso = report.isolation
+        print(f"\nIsolation:")
+        print(f"  Egress blocked:       {'Yes' if iso.egress_blocked else 'NO - WARNING'}")
+        print(f"  No shared creds:      {'Yes' if iso.no_shared_credentials else 'NO - WARNING'}")
+        print(f"  Filesystem integrity:  {'Yes' if iso.filesystem_integrity else 'NO - WARNING'}")
+
+    if report.compromise_indicators:
+        print(f"\nCompromise Indicators ({len(report.compromise_indicators)}):")
+        for ci in report.compromise_indicators:
+            print(f"  [{ci.severity.upper()}] {ci.description}")
+
+
 def cli():
     """Main CLI entry point"""
     parser = argparse.ArgumentParser(
         prog='honeyclaw',
         description='Honeyclaw - SSH/HTTP Honeypot Framework'
     )
-    
+
     subparsers = parser.add_subparsers(dest='command', help='Commands')
     
     # replay command group
@@ -609,20 +674,27 @@ def cli():
     report_lookup_parser.add_argument('--verbose', '-v', action='store_true', help='Show raw WHOIS')
     report_lookup_parser.set_defaults(func=cmd_report_lookup)
     
+    # === Health command ===
+    health_parser = subparsers.add_parser('health', help='Run health check')
+    health_parser.add_argument('--json', '-j', action='store_true', help='Output as JSON')
+    health_parser.add_argument('--services', '-s',
+                               help='Services to check (name:port,...). e.g. ssh:22,api:8080')
+    health_parser.set_defaults(func=cmd_health)
+
     args = parser.parse_args()
-    
+
     if not args.command:
         parser.print_help()
         sys.exit(0)
-    
+
     if args.command == 'replay' and not args.subcommand:
         replay_parser.print_help()
         sys.exit(0)
-    
+
     if args.command == 'report' and not args.subcommand:
         report_parser.print_help()
         sys.exit(0)
-    
+
     if hasattr(args, 'func'):
         args.func(args)
     else:

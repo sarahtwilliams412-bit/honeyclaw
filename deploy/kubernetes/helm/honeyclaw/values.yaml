@@ -1,0 +1,141 @@
+# =============================================================================
+# Honeyclaw Helm Chart - Default Values
+# =============================================================================
+
+# Global settings
+global:
+  environment: production
+  honeypotId: honeyclaw
+
+# Honeypot templates to deploy
+templates:
+  - name: basic-ssh
+    enabled: true
+    replicas: 1
+    ports:
+      - name: ssh
+        containerPort: 22
+        servicePort: 22
+        protocol: TCP
+      - name: health
+        containerPort: 9090
+        servicePort: 9090
+        protocol: TCP
+    resources:
+      requests:
+        cpu: 100m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+
+  - name: fake-api
+    enabled: true
+    replicas: 1
+    ports:
+      - name: http
+        containerPort: 8080
+        servicePort: 80
+        protocol: TCP
+      - name: health
+        containerPort: 9090
+        servicePort: 9090
+        protocol: TCP
+    resources:
+      requests:
+        cpu: 200m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+
+  - name: enterprise-sim
+    enabled: false
+    replicas: 1
+    ports:
+      - name: ssh
+        containerPort: 22
+        servicePort: 22
+        protocol: TCP
+      - name: http
+        containerPort: 80
+        servicePort: 80
+        protocol: TCP
+      - name: https
+        containerPort: 443
+        servicePort: 443
+        protocol: TCP
+      - name: rdp
+        containerPort: 3389
+        servicePort: 3389
+        protocol: TCP
+      - name: health
+        containerPort: 9090
+        servicePort: 9090
+        protocol: TCP
+    resources:
+      requests:
+        cpu: 500m
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 512Mi
+
+# Image configuration
+image:
+  repository: honeyclaw
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Pod rotation (rebuild cycle)
+rotation:
+  enabled: true
+  intervalHours: 24
+  schedule: "0 0 * * *"
+
+# Health checks
+healthCheck:
+  port: 9090
+  path: /health
+  initialDelaySeconds: 15
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# Network policies
+networkPolicy:
+  enabled: true
+  # Allow egress only to logging service
+  egressRules:
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 443
+          protocol: TCP
+
+# Pod security
+podSecurity:
+  runAsNonRoot: false
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  pidsLimit: 100
+
+# Autoscaling
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+
+# Monitoring
+monitoring:
+  enabled: false
+  serviceMonitor: false
+
+# Logging
+logging:
+  s3Bucket: ""
+  s3Prefix: "logs/"
+  siemEndpoint: ""
+  siemPort: 514
