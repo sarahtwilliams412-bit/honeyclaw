@@ -1,0 +1,109 @@
+# Honeyclaw MITRE ATT&CK Custom Mapping Rules
+#
+# This file defines custom mappings from honeypot events to MITRE ATT&CK
+# tactics and techniques. Rules here extend the built-in mappings in
+# mitre_mapper.py.
+#
+# Environment variable HONEYCLAW_MITRE_RULES can override this file's path.
+#
+# Structure:
+#   event_type_mappings: Maps event type strings to MITRE tactics/techniques
+#   pattern_rules: Regex patterns matched against event fields
+#
+# Reference: https://attack.mitre.org/matrices/enterprise/
+
+# --- Event type mappings ---
+# Each entry maps an event type string to one or more MITRE mappings.
+# These extend (not replace) the built-in event type mappings.
+event_type_mappings:
+  # DNS query events (if a DNS honeypot is added)
+  - event_type: dns_query
+    mappings:
+      - tactic: "Reconnaissance"
+        technique_id: "T1590.002"
+        technique_name: "Gather Victim Network Information: DNS"
+
+  # SNMP events
+  - event_type: snmp_query
+    mappings:
+      - tactic: "Discovery"
+        technique_id: "T1046"
+        technique_name: "Network Service Discovery"
+
+  # FTP events
+  - event_type: ftp_login
+    mappings:
+      - tactic: "Lateral Movement"
+        technique_id: "T1021"
+        technique_name: "Remote Services"
+      - tactic: "Credential Access"
+        technique_id: "T1110"
+        technique_name: "Brute Force"
+
+  # Container escape signals
+  - event_type: container_escape
+    mappings:
+      - tactic: "Privilege Escalation"
+        technique_id: "T1611"
+        technique_name: "Escape to Host"
+
+
+# --- Pattern rules ---
+# Each rule defines a regex pattern to match against a specific event field.
+# When matched, the corresponding MITRE mapping is applied.
+#
+# Fields:
+#   pattern: Python regex (case-insensitive)
+#   field: Event field to match (default: "command")
+#   tactic: MITRE tactic name
+#   technique_id: MITRE technique ID
+#   technique_name: MITRE technique name
+#   confidence: 0.0-1.0 confidence score (default: 0.9)
+pattern_rules:
+  # Detect reverse shell patterns
+  - pattern: "(bash|sh|nc|ncat)\\s+.*(-e|/dev/tcp|/dev/udp|mkfifo)"
+    field: command
+    tactic: "Execution"
+    technique_id: "T1059.004"
+    technique_name: "Command and Scripting Interpreter: Unix Shell"
+    confidence: 0.95
+
+  # Detect iptables manipulation
+  - pattern: "\\biptables\\s+(-A|-I|-D|--append|--insert|--delete)"
+    field: command
+    tactic: "Defense Evasion"
+    technique_id: "T1562.004"
+    technique_name: "Impair Defenses: Disable or Modify System Firewall"
+    confidence: 0.9
+
+  # Detect kernel module loading
+  - pattern: "\\b(insmod|modprobe|rmmod)\\b"
+    field: command
+    tactic: "Persistence"
+    technique_id: "T1547.006"
+    technique_name: "Boot or Logon Autostart Execution: Kernel Modules and Extensions"
+    confidence: 0.9
+
+  # Detect masquerading via file rename
+  - pattern: "\\bmv\\s+.*\\s+/usr/(bin|sbin|local/bin)/"
+    field: command
+    tactic: "Defense Evasion"
+    technique_id: "T1036"
+    technique_name: "Masquerading"
+    confidence: 0.8
+
+  # Detect cloud metadata access (SSRF indicator)
+  - pattern: "169\\.254\\.169\\.254|metadata\\.google\\.internal"
+    field: path
+    tactic: "Credential Access"
+    technique_id: "T1552.005"
+    technique_name: "Unsecured Credentials: Cloud Instance Metadata API"
+    confidence: 0.95
+
+  # Detect environment variable access
+  - pattern: "\\b(env|printenv|set)\\b|/proc/self/environ"
+    field: command
+    tactic: "Credential Access"
+    technique_id: "T1552.001"
+    technique_name: "Unsecured Credentials: Credentials In Files"
+    confidence: 0.7

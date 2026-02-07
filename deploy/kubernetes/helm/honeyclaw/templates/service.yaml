@@ -1,24 +1,17 @@
-{{- range .Values.templates }}
-{{- if .enabled }}
----
 apiVersion: v1
 kind: Service
 metadata:
-  name: honeyclaw-{{ .name }}
+  name: {{ include "honeyclaw.fullname" . }}
   labels:
-    app: honeyclaw
-    template: {{ .name }}
+    {{- include "honeyclaw.labels" . | nindent 4 }}
 spec:
-  type: LoadBalancer
-  selector:
-    app: honeyclaw
-    template: {{ .name }}
+  type: {{ .Values.service.type }}
   ports:
-    {{- range .ports }}
+    {{- range .Values.service.ports }}
     - name: {{ .name }}
-      port: {{ .servicePort }}
-      targetPort: {{ .containerPort }}
-      protocol: {{ .protocol | default "TCP" }}
+      port: {{ .port }}
+      targetPort: {{ .targetPort }}
+      protocol: {{ .protocol }}
     {{- end }}
-{{- end }}
-{{- end }}
+  selector:
+    {{- include "honeyclaw.selectorLabels" . | nindent 4 }}

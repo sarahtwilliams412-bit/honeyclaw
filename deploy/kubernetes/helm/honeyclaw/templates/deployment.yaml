@@ -1,29 +1,35 @@
-{{- range .Values.templates }}
-{{- if .enabled }}
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: honeyclaw-{{ .name }}
+  name: {{ include "honeyclaw.fullname" . }}
   labels:
-    app: honeyclaw
-    template: {{ .name }}
-    app.kubernetes.io/name: honeyclaw
-    app.kubernetes.io/component: {{ .name }}
+    {{- include "honeyclaw.labels" . | nindent 4 }}
+    honeyclaw/template: {{ .Values.template }}
 spec:
-  replicas: {{ .replicas | default 1 }}
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
   selector:
     matchLabels:
-      app: honeyclaw
-      template: {{ .name }}
+      {{- include "honeyclaw.selectorLabels" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   template:
     metadata:
       labels:
-        app: honeyclaw
-        template: {{ .name }}
+        {{- include "honeyclaw.selectorLabels" . | nindent 8 }}
+        honeyclaw/template: {{ .Values.template }}
+      annotations:
+        # Force restart on config change
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
     spec:
+      serviceAccountName: {{ include "honeyclaw.serviceAccountName" . }}
       securityContext:
-        runAsNonRoot: {{ $.Values.podSecurity.runAsNonRoot }}
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if .Values.podAntiAffinity.enabled }}
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -31,68 +37,66 @@ spec:
               podAffinityTerm:
                 labelSelector:
                   matchExpressions:
-                    - key: template
+                    - key: app.kubernetes.io/name
                       operator: In
                       values:
-                        - {{ .name }}
+                        - {{ include "honeyclaw.name" . }}
                 topologyKey: kubernetes.io/hostname
+      {{- end }}
       containers:
-        - name: honeypot
-          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
-          imagePullPolicy: {{ $.Values.image.pullPolicy }}
-          env:
-            - name: HONEYPOT_ID
-              value: "honeyclaw-{{ .name }}"
-            - name: HONEYCLAW_TEMPLATE
-              value: {{ .name }}
-            - name: HONEYCLAW_HEALTH_PORT
-              value: "{{ $.Values.healthCheck.port }}"
-            - name: HONEYCLAW_SELF_HEAL_ENABLED
-              value: "true"
-          ports:
-            {{- range .ports }}
-            - name: {{ .name }}
-              containerPort: {{ .containerPort }}
-              protocol: {{ .protocol | default "TCP" }}
-            {{- end }}
-          resources:
-            {{- toYaml .resources | nindent 12 }}
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
-            readOnlyRootFilesystem: {{ $.Values.podSecurity.readOnlyRootFilesystem }}
-            allowPrivilegeEscalation: {{ $.Values.podSecurity.allowPrivilegeEscalation }}
-            capabilities:
-              drop:
-                - ALL
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            {{- range .Values.service.ports }}
+            - name: {{ .name }}
+              containerPort: {{ .targetPort }}
+              protocol: {{ .protocol }}
+            {{- end }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "honeyclaw.fullname" . }}
+          {{- if .Values.secrets }}
+          env:
+            {{- range $key, $value := .Values.secrets }}
+            - name: {{ $key }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "honeyclaw.fullname" $ }}-secrets
+                  key: {{ $key }}
+            {{- end }}
+          {{- end }}
           livenessProbe:
-            httpGet:
-              path: {{ $.Values.healthCheck.path }}
-              port: {{ $.Values.healthCheck.port }}
-            initialDelaySeconds: {{ $.Values.healthCheck.initialDelaySeconds }}
-            periodSeconds: {{ $.Values.healthCheck.periodSeconds }}
-            timeoutSeconds: {{ $.Values.healthCheck.timeoutSeconds }}
-            failureThreshold: {{ $.Values.healthCheck.failureThreshold }}
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
-            httpGet:
-              path: {{ $.Values.healthCheck.path }}
-              port: {{ $.Values.healthCheck.port }}
-            initialDelaySeconds: 5
-            periodSeconds: 10
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
+            - name: data
+              mountPath: /data
             - name: tmp
               mountPath: /tmp
-            - name: var-log
-              mountPath: /var/log/honeyclaw
-            - name: recordings
-              mountPath: /var/lib/honeyclaw/recordings
       volumes:
         - name: tmp
           emptyDir:
-            sizeLimit: 100Mi
-        - name: var-log
+            sizeLimit: 50Mi
+        {{- if .Values.persistence.enabled }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "honeyclaw.fullname" . }}
+        {{- else }}
+        - name: data
           emptyDir:
             sizeLimit: 500Mi
-        - name: recordings
-          emptyDir:
-            sizeLimit: 1Gi
-{{- end }}
-{{- end }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

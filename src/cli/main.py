@@ -4,9 +4,9 @@ Honeyclaw CLI - Main entry point
 """
 
 import argparse
-import asyncio
 import json
 import os
+import subprocess
 import sys
 import webbrowser
 from datetime import datetime
@@ -386,6 +386,7 @@ def cmd_replay_delete(args):
 
 def cmd_report(args):
     """Report an IP address to abuse databases"""
+    import asyncio
     from src.reporting import ReportingEngine, ReportingConfig
     
     # Build config from args
@@ -501,6 +502,7 @@ def cmd_report_log(args):
 
 def cmd_report_lookup(args):
     """Lookup abuse contact for an IP"""
+    import asyncio
     from src.reporting.providers.isp_abuse import ISPAbuseReporter
     
     reporter = ISPAbuseReporter()
@@ -528,33 +530,333 @@ def cmd_report_lookup(args):
     asyncio.run(do_lookup())
 
 
+# === Deploy Commands ===
+
+def _get_deploy_dir():
+    """Get the deploy directory path"""
+    return Path(__file__).parent.parent.parent / "deploy"
+
+
+def cmd_deploy_status(args):
+    """Show deployment infrastructure status"""
+    deploy_dir = _get_deploy_dir()
+
+    print("=== HoneyClaw Deployment Infrastructure ===\n")
+
+    # Check available deployment methods
+    methods = {
+        "Terraform": deploy_dir / "terraform" / "main.tf",
+        "Fly.io": deploy_dir / "flyio" / "deploy.sh",
+        "Kubernetes (Helm)": deploy_dir / "kubernetes" / "helm" / "honeyclaw" / "Chart.yaml",
+        "Kubernetes (Kustomize)": deploy_dir / "kubernetes" / "manifests" / "kustomization.yaml",
+    }
+
+    print("Available deployment methods:")
+    for name, path in methods.items():
+        status = "ready" if path.exists() else "not found"
+        marker = "[+]" if path.exists() else "[-]"
+        print(f"  {marker} {name}: {status}")
+
+    # Check security profiles
+    print("\nSecurity profiles:")
+    profiles = {
+        "AppArmor (SSH)": deploy_dir / "apparmor" / "honeyclaw-ssh.profile",
+        "AppArmor (API)": deploy_dir / "apparmor" / "honeyclaw-api.profile",
+        "AppArmor (Enterprise)": deploy_dir / "apparmor" / "honeyclaw-enterprise.profile",
+        "Seccomp": deploy_dir / "seccomp" / "honeyclaw-default.json",
+    }
+    for name, path in profiles.items():
+        marker = "[+]" if path.exists() else "[-]"
+        print(f"  {marker} {name}")
+
+    # Check for Fly.io apps if flyctl is available
+    print("\nFly.io status:")
+    try:
+        result = subprocess.run(
+            ["fly", "apps", "list", "--json"],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0:
+            apps = json.loads(result.stdout)
+            honeyclaw_apps = [a for a in apps if a.get("Name", "").startswith("honeyclaw")]
+            if honeyclaw_apps:
+                for app in honeyclaw_apps:
+                    print(f"  [+] {app['Name']} ({app.get('Status', 'unknown')})")
+            else:
+                print("  No honeyclaw apps deployed")
+        else:
+            print("  flyctl not authenticated (run: fly auth login)")
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        print("  flyctl not installed")
+
+    # Check rebuild interval config
+    rebuild_hours = os.environ.get("HONEYCLAW_REBUILD_INTERVAL_HOURS", "24")
+    print(f"\nRebuild cycle: every {rebuild_hours} hours")
+
+
+def cmd_deploy_flyio(args):
+    """Deploy a honeypot template to Fly.io"""
+    deploy_script = _get_deploy_dir() / "flyio" / "deploy.sh"
+
+    if not deploy_script.exists():
+        print("Error: deploy/flyio/deploy.sh not found", file=sys.stderr)
+        sys.exit(1)
+
+    cmd = [str(deploy_script), args.template]
+    if args.region:
+        cmd.append(args.region)
+
+    env = os.environ.copy()
+    if args.app_prefix:
+        env["APP_PREFIX"] = args.app_prefix
+
+    try:
+        result = subprocess.run(cmd, env=env)
+        sys.exit(result.returncode)
+    except KeyboardInterrupt:
+        print("\nDeployment cancelled.")
+        sys.exit(1)
+
+
+def cmd_deploy_rotate(args):
+    """Rotate (rebuild) honeypot containers"""
+    rotate_script = _get_deploy_dir() / "flyio" / "rotate.sh"
+
+    if not rotate_script.exists():
+        print("Error: deploy/flyio/rotate.sh not found", file=sys.stderr)
+        sys.exit(1)
+
+    cmd = [str(rotate_script)]
+    if args.app:
+        cmd.append(args.app)
+
+    env = os.environ.copy()
+    if args.dry_run:
+        env["DRY_RUN"] = "true"
+    if args.export_bucket:
+        env["EXPORT_BUCKET"] = args.export_bucket
+
+    try:
+        result = subprocess.run(cmd, env=env)
+        sys.exit(result.returncode)
+    except KeyboardInterrupt:
+        print("\nRotation cancelled.")
+        sys.exit(1)
+
+
+def cmd_deploy_terraform(args):
+    """Run Terraform commands for infrastructure management"""
+    tf_dir = _get_deploy_dir() / "terraform"
+
+    if not tf_dir.exists():
+        print("Error: deploy/terraform/ not found", file=sys.stderr)
+        sys.exit(1)
+
+    tf_action = args.action
+    cmd = ["terraform", tf_action]
+
+    if args.var_file:
+        cmd.extend(["-var-file", args.var_file])
+    if tf_action in ("apply", "destroy") and args.auto_approve:
+        cmd.append("-auto-approve")
+
+    try:
+        result = subprocess.run(cmd, cwd=str(tf_dir))
+        sys.exit(result.returncode)
+    except FileNotFoundError:
+        print("Error: terraform not found. Install from https://www.terraform.io/downloads", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("\nTerraform cancelled.")
+        sys.exit(1)
+
+# === Health Commands ===
+
+def cmd_health_status(args):
+    """Show current health status"""
+    from src.health import HealthMonitor, HealthConfig
+
+    config = HealthConfig.from_env()
+    monitor = HealthMonitor(config=config)
+    report = monitor.run_checks()
+
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2))
+        return
+
+    status_icons = {
+        'healthy': '[OK]',
+        'degraded': '[WARN]',
+        'compromised': '[CRIT]',
+        'unknown': '[??]',
+    }
+    status_name = report.status.name.lower()
+    icon = status_icons.get(status_name, '[??]')
+
+    print(f"=== Honeyclaw Health Status ===\n")
+    print(f"Status:       {icon} {status_name.upper()}")
+    print(f"Honeypot ID:  {report.honeypot_id}")
+    print(f"Uptime:       {report.uptime_seconds:.0f}s")
+    print(f"Last Check:   {report.last_check}")
+
+    if report.services:
+        print(f"\nServices:")
+        for svc in report.services:
+            svc_icon = '[OK]' if svc.status.name == 'UP' else '[DOWN]'
+            detail = ''
+            if svc.details.get('response_ms'):
+                detail = f" ({svc.details['response_ms']}ms)"
+            elif svc.message:
+                detail = f" - {svc.message}"
+            print(f"  {svc_icon} {svc.name}{detail}")
+
+    if report.resources:
+        res = report.resources
+        print(f"\nResources:")
+        print(f"  CPU:        {res.cpu_percent}%")
+        print(f"  Memory:     {res.memory_mb:.0f}MB ({res.memory_percent:.1f}%)")
+        print(f"  Disk:       {res.disk_percent}%")
+        print(f"  Open FDs:   {res.open_fds}")
+        print(f"  Processes:  {res.pid_count}")
+
+    if report.isolation:
+        iso = report.isolation
+        print(f"\nIsolation:")
+        egress_icon = '[OK]' if iso.egress_blocked else '[FAIL]'
+        cred_icon = '[OK]' if iso.no_shared_credentials else '[WARN]'
+        fs_icon = '[OK]' if iso.filesystem_integrity else '[FAIL]'
+        print(f"  {egress_icon} Egress blocked")
+        print(f"  {cred_icon} No shared credentials")
+        print(f"  {fs_icon} Filesystem integrity")
+
+    if report.compromise_indicators:
+        print(f"\nCompromise Indicators ({len(report.compromise_indicators)}):")
+        for ind in report.compromise_indicators:
+            sev = ind.severity.upper()
+            print(f"  [{sev}] {ind.description}")
+
+
+def cmd_health_check(args):
+    """Run a one-time health check (alias for status)"""
+    cmd_health_status(args)
+
+
+def cmd_health_monitor(args):
+    """Start background health monitoring"""
+    from src.health import HealthMonitor, HealthConfig, SelfHealer, SelfHealConfig
+
+    health_config = HealthConfig.from_env()
+    health_config.check_interval_sec = args.interval
+
+    heal_config = SelfHealConfig.from_env()
+    healer = SelfHealer(config=heal_config)
+
+    monitor = HealthMonitor(
+        config=health_config,
+        on_compromise=healer.handle_compromise,
+        on_degraded=healer.handle_degraded,
+    )
+
+    print(f"Starting health monitor (interval={args.interval}s)")
+    print(f"Honeypot ID: {monitor.honeypot_id}")
+    print("Press Ctrl+C to stop\n")
+
+    monitor.start()
+
+    try:
+        while True:
+            import time
+            time.sleep(1)
+            report = monitor.get_last_report()
+            if report:
+                status = report.status.name
+                indicators = len(report.compromise_indicators)
+                services_up = sum(1 for s in report.services if s.status.name == 'UP')
+                services_total = len(report.services)
+                sys.stdout.write(
+                    f"\r[{report.last_check}] "
+                    f"Status: {status} | "
+                    f"Services: {services_up}/{services_total} | "
+                    f"Indicators: {indicators}    "
+                )
+                sys.stdout.flush()
+    except KeyboardInterrupt:
+        print("\n\nStopping health monitor...")
+        monitor.stop()
+        print("Stopped.")
+
+
+def cmd_health_log(args):
+    """Show health check log"""
+    log_path = os.environ.get('HEALTH_LOG_PATH', '/var/log/honeyclaw/health.json')
+
+    if not os.path.exists(log_path):
+        print(f"No health log found at {log_path}")
+        return
+
+    entries = []
+    try:
+        with open(log_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        entries.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+    except OSError as e:
+        print(f"Error reading health log: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Get last N entries
+    entries = entries[-args.limit:]
+
+    if args.json:
+        print(json.dumps(entries, indent=2))
+        return
+
+    if not entries:
+        print("No health log entries found.")
+        return
+
+    print("=== Health Check Log ===\n")
+    for entry in reversed(entries):
+        status = entry.get('status', 'unknown').upper()
+        icon = {'healthy': '[OK]', 'degraded': '[WARN]', 'compromised': '[CRIT]'}.get(
+            entry.get('status', ''), '[??]'
+        )
+        ts = entry.get('timestamp', '?')
+        indicators = entry.get('indicators', 0)
+        hid = entry.get('honeypot_id', '?')
+        print(f"  {icon} {ts}  {status}  indicators={indicators}  honeypot={hid}")
+
+
 # === Logs Commands ===
 
 def cmd_logs_correlations(args):
     """Show active correlation sessions"""
-    from src.utils.correlation import get_correlation_engine
+    from src.utils.correlation import get_correlation_manager
 
-    engine = get_correlation_engine()
-    sessions = engine.get_active_sessions()
+    mgr = get_correlation_manager()
+    sessions = mgr.get_active_sessions()
 
     if args.json:
-        print(json.dumps([s.to_dict() for s in sessions], indent=2))
+        print(json.dumps(sessions, indent=2))
         return
 
     if not sessions:
         print("No active correlation sessions.")
         return
 
-    headers = ["Source IP", "Correlation ID", "First Seen", "Last Seen", "Events", "Services"]
+    headers = ["Source IP", "Correlation ID", "First Seen", "Last Seen", "Duration"]
     rows = []
-    for session in sessions:
+    for ip, info in sessions.items():
         rows.append([
-            session.source_ip,
-            session.correlation_id,
-            datetime.fromtimestamp(session.first_seen).strftime('%H:%M:%S'),
-            datetime.fromtimestamp(session.last_seen).strftime('%H:%M:%S'),
-            str(session.event_count),
-            ", ".join(session.services) if session.services else "-",
+            ip,
+            info["correlation_id"],
+            info["first_seen"][:19],
+            info["last_seen"][:19],
+            f"{info['duration_seconds']:.1f}s",
         ])
 
     print(format_table(headers, rows))
@@ -566,15 +868,15 @@ def cmd_logs_stats(args):
     stats = {}
 
     try:
-        from src.utils.correlation import get_correlation_engine
-        stats["correlation"] = get_correlation_engine().get_stats()
+        from src.utils.correlation import get_correlation_manager
+        stats["correlation"] = get_correlation_manager().get_stats()
     except Exception as e:
         stats["correlation"] = {"error": str(e)}
 
     try:
-        from src.utils.geoip import get_geoip
-        geoip = get_geoip()
-        stats["geoip"] = {"enabled": geoip.enabled}
+        from src.utils.geoip import get_geoip_resolver
+        resolver = get_geoip_resolver()
+        stats["geoip"] = {"enabled": resolver.enabled}
     except Exception as e:
         stats["geoip"] = {"error": str(e)}
 
@@ -603,11 +905,11 @@ def cmd_logs_stats(args):
     if "error" in corr:
         print(f"  Error: {corr['error']}")
     else:
-        print(f"  Active sessions:   {corr.get('active_sessions', 0)}")
-        print(f"  Total sessions:    {corr.get('total_sessions', 0)}")
-        print(f"  Events correlated: {corr.get('total_events_correlated', 0)}")
-        print(f"  Multi-service:     {corr.get('multi_service_sessions', 0)}")
-        print(f"  Window:            {corr.get('correlation_window_seconds', 0)}s")
+        print(f"  Active sessions:  {corr.get('active_sessions', 0)}")
+        print(f"  Created:          {corr.get('correlations_created', 0)}")
+        print(f"  Reused:           {corr.get('correlations_reused', 0)}")
+        print(f"  Expired:          {corr.get('correlations_expired', 0)}")
+        print(f"  Window:           {corr.get('window_seconds', 0)}s")
 
     # GeoIP
     geo = stats.get("geoip", {})
@@ -701,79 +1003,13 @@ def cmd_logs_verify(args):
         print(f"Retain Until:    {result.get('lock_retain_until')}")
 
 
-# === Health Commands ===
-
-def cmd_health(args):
-    """Run a health check"""
-    from src.health.monitor import HealthMonitor
-
-    # Parse services
-    services = {}
-    if args.services:
-        for svc in args.services.split(","):
-            parts = svc.strip().split(":")
-            if len(parts) == 2:
-                services[parts[0]] = int(parts[1])
-
-    monitor = HealthMonitor(
-        honeypot_id=os.environ.get('HONEYPOT_ID', 'honeyclaw'),
-        services=services,
-    )
-
-    report = asyncio.run(monitor.check())
-
-    if args.json:
-        print(report.to_json())
-        return
-
-    status_colors = {
-        "healthy": "\033[32m",     # green
-        "degraded": "\033[33m",    # yellow
-        "compromised": "\033[31m", # red
-        "unknown": "\033[90m",     # gray
-    }
-    reset = "\033[0m"
-    color = status_colors.get(report.status.value, "")
-
-    print(f"=== Honeyclaw Health Check ===\n")
-    print(f"Status:     {color}{report.status.value.upper()}{reset}")
-    print(f"Honeypot:   {report.honeypot_id}")
-    print(f"Uptime:     {report.uptime_seconds:.0f}s")
-
-    if report.services:
-        print(f"\nServices:")
-        for name, svc in report.services.items():
-            svc_icon = "UP" if svc.status == "up" else "DOWN"
-            print(f"  {name}: {svc_icon}" + (f" ({svc.reason})" if svc.reason else ""))
-
-    if report.resources:
-        r = report.resources
-        print(f"\nResources:")
-        print(f"  CPU:    {r.cpu_percent:.1f}%")
-        print(f"  Memory: {r.memory_mb:.0f} MB ({r.memory_percent:.1f}%)")
-        print(f"  Disk:   {r.disk_percent:.1f}%")
-        print(f"  FDs:    {r.open_fds}")
-
-    if report.isolation:
-        iso = report.isolation
-        print(f"\nIsolation:")
-        print(f"  Egress blocked:       {'Yes' if iso.egress_blocked else 'NO - WARNING'}")
-        print(f"  No shared creds:      {'Yes' if iso.no_shared_credentials else 'NO - WARNING'}")
-        print(f"  Filesystem integrity:  {'Yes' if iso.filesystem_integrity else 'NO - WARNING'}")
-
-    if report.compromise_indicators:
-        print(f"\nCompromise Indicators ({len(report.compromise_indicators)}):")
-        for ci in report.compromise_indicators:
-            print(f"  [{ci.severity.upper()}] {ci.description}")
-
-
 def cli():
     """Main CLI entry point"""
     parser = argparse.ArgumentParser(
         prog='honeyclaw',
         description='Honeyclaw - SSH/HTTP Honeypot Framework'
     )
-
+    
     subparsers = parser.add_subparsers(dest='command', help='Commands')
     
     # replay command group
@@ -816,6 +1052,35 @@ def cli():
     delete_parser.add_argument('--force', '-f', action='store_true', help='Skip confirmation')
     delete_parser.set_defaults(func=cmd_replay_delete)
     
+    # === Health command group ===
+    health_parser = subparsers.add_parser('health', help='System health commands')
+    health_subparsers = health_parser.add_subparsers(dest='subcommand', help='Health subcommands')
+
+    # health status
+    health_status_parser = health_subparsers.add_parser('status', help='Show current health status')
+    health_status_parser.add_argument('--json', '-j', action='store_true', help='Output as JSON')
+    health_status_parser.set_defaults(func=cmd_health_status)
+
+    # health check (alias for status)
+    health_check_parser = health_subparsers.add_parser('check', help='Run a health check')
+    health_check_parser.add_argument('--json', '-j', action='store_true', help='Output as JSON')
+    health_check_parser.set_defaults(func=cmd_health_check)
+
+    # health monitor
+    health_monitor_parser = health_subparsers.add_parser(
+        'monitor', help='Start background health monitoring'
+    )
+    health_monitor_parser.add_argument(
+        '--interval', '-i', type=int, default=60, help='Check interval in seconds (default: 60)'
+    )
+    health_monitor_parser.set_defaults(func=cmd_health_monitor)
+
+    # health log
+    health_log_parser = health_subparsers.add_parser('log', help='Show health check log')
+    health_log_parser.add_argument('--limit', '-l', type=int, default=20, help='Number of entries')
+    health_log_parser.add_argument('--json', '-j', action='store_true', help='Output as JSON')
+    health_log_parser.set_defaults(func=cmd_health_log)
+
     # === Report command group ===
     report_parser = subparsers.add_parser('report', help='Abuse reporting commands')
     report_subparsers = report_parser.add_subparsers(dest='subcommand', help='Report subcommands')
@@ -846,7 +1111,38 @@ def cli():
     report_lookup_parser.add_argument('--json', '-j', action='store_true', help='Output as JSON')
     report_lookup_parser.add_argument('--verbose', '-v', action='store_true', help='Show raw WHOIS')
     report_lookup_parser.set_defaults(func=cmd_report_lookup)
-    
+
+    # === Deploy command group ===
+    deploy_parser = subparsers.add_parser('deploy', help='Infrastructure deployment commands')
+    deploy_subparsers = deploy_parser.add_subparsers(dest='subcommand', help='Deploy subcommands')
+
+    # deploy status
+    deploy_status_parser = deploy_subparsers.add_parser('status', help='Show deployment infrastructure status')
+    deploy_status_parser.set_defaults(func=cmd_deploy_status)
+
+    # deploy flyio
+    deploy_flyio_parser = deploy_subparsers.add_parser('flyio', help='Deploy to Fly.io')
+    deploy_flyio_parser.add_argument('template', choices=['basic-ssh', 'fake-api', 'enterprise-sim'],
+                                     help='Honeypot template to deploy')
+    deploy_flyio_parser.add_argument('--region', '-r', default='sjc', help='Fly.io region (default: sjc)')
+    deploy_flyio_parser.add_argument('--app-prefix', help='App name prefix (default: honeyclaw)')
+    deploy_flyio_parser.set_defaults(func=cmd_deploy_flyio)
+
+    # deploy rotate
+    deploy_rotate_parser = deploy_subparsers.add_parser('rotate', help='Rotate (rebuild) honeypot containers')
+    deploy_rotate_parser.add_argument('--app', '-a', help='Specific app to rotate (default: all)')
+    deploy_rotate_parser.add_argument('--dry-run', '-n', action='store_true', help='Show what would be rotated')
+    deploy_rotate_parser.add_argument('--export-bucket', help='S3 bucket for pre-rotation data export')
+    deploy_rotate_parser.set_defaults(func=cmd_deploy_rotate)
+
+    # deploy terraform
+    deploy_tf_parser = deploy_subparsers.add_parser('terraform', help='Run Terraform infrastructure commands')
+    deploy_tf_parser.add_argument('action', choices=['init', 'plan', 'apply', 'destroy', 'output'],
+                                  help='Terraform action')
+    deploy_tf_parser.add_argument('--var-file', help='Path to .tfvars file')
+    deploy_tf_parser.add_argument('--auto-approve', action='store_true', help='Skip approval prompt')
+    deploy_tf_parser.set_defaults(func=cmd_deploy_terraform)
+
     # === Logs command group ===
     logs_parser = subparsers.add_parser('logs', help='Enhanced logging commands')
     logs_subparsers = logs_parser.add_subparsers(dest='subcommand', help='Logs subcommands')
@@ -871,26 +1167,27 @@ def cli():
     logs_verify_parser.add_argument('key', help='S3 object key to verify')
     logs_verify_parser.add_argument('--json', '-j', action='store_true', help='Output as JSON')
     logs_verify_parser.set_defaults(func=cmd_logs_verify)
-    
-    # === Health command ===
-    health_parser = subparsers.add_parser('health', help='Run health check')
-    health_parser.add_argument('--json', '-j', action='store_true', help='Output as JSON')
-    health_parser.add_argument('--services', '-s',
-                               help='Services to check (name:port,...). e.g. ssh:22,api:8080')
-    health_parser.set_defaults(func=cmd_health)
 
     args = parser.parse_args()
-
+    
     if not args.command:
         parser.print_help()
         sys.exit(0)
-
+    
     if args.command == 'replay' and not args.subcommand:
         replay_parser.print_help()
         sys.exit(0)
 
+    if args.command == 'health' and not args.subcommand:
+        health_parser.print_help()
+        sys.exit(0)
+
     if args.command == 'report' and not args.subcommand:
         report_parser.print_help()
+        sys.exit(0)
+
+    if args.command == 'deploy' and not args.subcommand:
+        deploy_parser.print_help()
         sys.exit(0)
 
     if args.command == 'logs' and not args.subcommand:
