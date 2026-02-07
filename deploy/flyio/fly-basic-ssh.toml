@@ -1,0 +1,43 @@
+# HoneyClaw - Basic SSH Honeypot Fly.io Template
+#
+# Usage:
+#   cp deploy/flyio/fly-basic-ssh.toml fly.toml
+#   fly apps create honeyclaw-ssh-<region>
+#   fly secrets set MESH_TOKEN=<token> ALERT_WEBHOOK_URL=<url>
+#   fly deploy
+
+app = "honeyclaw-ssh"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "templates/basic-ssh/Dockerfile"
+
+[[services]]
+  internal_port = 8022
+  protocol = "tcp"
+
+  [[services.ports]]
+    port = 2222
+
+  [services.concurrency]
+    hard_limit = 200
+    soft_limit = 100
+    type = "connections"
+
+[env]
+  PORT = "8022"
+  SSH_BANNER = "OpenSSH_8.9p1 Ubuntu-3ubuntu0.6"
+  LOG_PATH = "/data/logs/honeypot.json"
+  RATELIMIT_ENABLED = "true"
+  RATELIMIT_CONN_PER_MIN = "20"
+  RATELIMIT_AUTH_PER_HOUR = "200"
+  HONEYCLAW_TEMPLATE = "basic-ssh"
+
+[mounts]
+  source = "honeyclaw_data"
+  destination = "/data"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256

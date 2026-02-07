@@ -1,0 +1,56 @@
+# HoneyClaw - Enterprise Simulation Honeypot Fly.io Template
+#
+# High-interaction honeypot simulating an enterprise environment
+# with SSH, HTTP, RDP, SMB, LDAP, and WinRM services.
+#
+# Usage:
+#   cp deploy/flyio/fly-enterprise-sim.toml fly.toml
+#   fly apps create honeyclaw-enterprise-<region>
+#   fly secrets set ALERT_WEBHOOK_URL=<url>
+#   fly deploy
+
+app = "honeyclaw-enterprise"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "templates/enterprise-sim/Dockerfile"
+
+# SSH
+[[services]]
+  internal_port = 22
+  protocol = "tcp"
+  [[services.ports]]
+    port = 2222
+
+# HTTP/HTTPS (Intranet, OWA)
+[[services]]
+  internal_port = 80
+  protocol = "tcp"
+  [[services.ports]]
+    handlers = ["http"]
+    port = 80
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port = 443
+
+# RDP
+[[services]]
+  internal_port = 3389
+  protocol = "tcp"
+  [[services.ports]]
+    port = 3389
+
+[env]
+  HONEYCLAW_TEMPLATE = "enterprise-sim"
+  LOG_PATH = "/data/logs/enterprise.json"
+  RATELIMIT_ENABLED = "true"
+  RATELIMIT_CONN_PER_MIN = "30"
+
+[mounts]
+  source = "honeyclaw_data"
+  destination = "/data"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 512

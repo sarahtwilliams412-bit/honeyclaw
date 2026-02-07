@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: honeyclaw
+
+resources:
+  - namespace.yaml
+  - rbac.yaml
+
+# Use Helm chart output as base, or apply directly:
+#   kubectl apply -k deploy/kubernetes/manifests/
+
+commonLabels:
+  app.kubernetes.io/part-of: honeyclaw
+  app.kubernetes.io/managed-by: kustomize

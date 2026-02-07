@@ -1,91 +1,107 @@
-# =============================================================================
-# Honeyclaw Networking Module
-# Isolated VPC with strict egress controls for honeypot deployment
-# =============================================================================
+# Honeypot Network Isolation Module
+#
+# Creates a dedicated VPC with NO peering to production.
+# Egress is blocked except for log shipping to the SIEM endpoint.
 
-variable "environment" { type = string }
-variable "vpc_cidr" { type = string }
-variable "public_subnets" { type = list(string) }
-variable "private_subnets" { type = list(string) }
-variable "availability_zones" { type = list(string) }
-variable "siem_endpoint_ip" { type = string }
-variable "siem_endpoint_port" { type = number }
+data "aws_availability_zones" "available" {
+  state = "available"
+}
 
-# --- VPC (No peering to production) ---
+locals {
+  azs            = slice(data.aws_availability_zones.available.names, 0, 2)
+  public_cidrs   = [for i, az in local.azs : cidrsubnet(var.vpc_cidr, 8, i)]
+  private_cidrs  = [for i, az in local.azs : cidrsubnet(var.vpc_cidr, 8, i + 100)]
+}
 
+# --- VPC ---
 resource "aws_vpc" "honeypot" {
   cidr_block           = var.vpc_cidr
-  enable_dns_hostnames = true
   enable_dns_support   = true
+  enable_dns_hostnames = true
 
   tags = {
-    Name = "honeyclaw-${var.environment}"
+    Name = "${var.name_prefix}-vpc"
   }
 }
 
-# --- Internet Gateway (for ingress only) ---
-
+# --- Internet Gateway (ingress only via NACLs) ---
 resource "aws_internet_gateway" "honeypot" {
   vpc_id = aws_vpc.honeypot.id
-  tags   = { Name = "honeyclaw-igw-${var.environment}" }
+
+  tags = {
+    Name = "${var.name_prefix}-igw"
+  }
 }
 
-# --- Public Subnets (ingress load balancer) ---
-
+# --- Public Subnets (honeypots live here for ingress) ---
 resource "aws_subnet" "public" {
-  count                   = length(var.public_subnets)
+  count = length(local.azs)
+
   vpc_id                  = aws_vpc.honeypot.id
-  cidr_block              = var.public_subnets[count.index]
-  availability_zone       = var.availability_zones[count.index]
+  cidr_block              = local.public_cidrs[count.index]
+  availability_zone       = local.azs[count.index]
   map_public_ip_on_launch = true
 
-  tags = { Name = "honeyclaw-public-${count.index}-${var.environment}" }
+  tags = {
+    Name = "${var.name_prefix}-public-${local.azs[count.index]}"
+    Tier = "public"
+  }
 }
 
+# --- Private Subnets (logging/processing, no direct internet) ---
+resource "aws_subnet" "private" {
+  count = length(local.azs)
+
+  vpc_id            = aws_vpc.honeypot.id
+  cidr_block        = local.private_cidrs[count.index]
+  availability_zone = local.azs[count.index]
+
+  tags = {
+    Name = "${var.name_prefix}-private-${local.azs[count.index]}"
+    Tier = "private"
+  }
+}
+
+# --- Route Tables ---
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.honeypot.id
-  tags   = { Name = "honeyclaw-public-rt-${var.environment}" }
-}
 
-resource "aws_route" "public_internet" {
-  route_table_id         = aws_route_table.public.id
-  destination_cidr_block = "0.0.0.0/0"
-  gateway_id             = aws_internet_gateway.honeypot.id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.honeypot.id
+  }
+
+  tags = {
+    Name = "${var.name_prefix}-public-rt"
+  }
 }
 
 resource "aws_route_table_association" "public" {
-  count          = length(var.public_subnets)
+  count = length(local.azs)
+
   subnet_id      = aws_subnet.public[count.index].id
   route_table_id = aws_route_table.public.id
 }
 
-# --- Private Subnets (honeypots) ---
-
-resource "aws_subnet" "private" {
-  count             = length(var.private_subnets)
-  vpc_id            = aws_vpc.honeypot.id
-  cidr_block        = var.private_subnets[count.index]
-  availability_zone = var.availability_zones[count.index]
-
-  tags = { Name = "honeyclaw-private-${count.index}-${var.environment}" }
-}
-
 resource "aws_route_table" "private" {
   vpc_id = aws_vpc.honeypot.id
-  tags   = { Name = "honeyclaw-private-rt-${var.environment}" }
+
+  tags = {
+    Name = "${var.name_prefix}-private-rt"
+  }
 }
 
 resource "aws_route_table_association" "private" {
-  count          = length(var.private_subnets)
+  count = length(local.azs)
+
   subnet_id      = aws_subnet.private[count.index].id
   route_table_id = aws_route_table.private.id
 }
 
-# --- Network ACLs (explicit deny-all egress except SIEM) ---
-
+# --- NACLs: strict egress control ---
 resource "aws_network_acl" "honeypot" {
   vpc_id     = aws_vpc.honeypot.id
-  subnet_ids = aws_subnet.private[*].id
+  subnet_ids = aws_subnet.public[*].id
 
   # Allow all inbound (honeypot must accept attacker connections)
   ingress {
@@ -97,7 +113,7 @@ resource "aws_network_acl" "honeypot" {
     to_port    = 0
   }
 
-  # Allow ephemeral port responses (for established connections)
+  # Allow ephemeral outbound (responses to inbound connections)
   egress {
     protocol   = "tcp"
     rule_no    = 100
@@ -107,61 +123,53 @@ resource "aws_network_acl" "honeypot" {
     to_port    = 65535
   }
 
-  # Allow SIEM log shipping
-  dynamic "egress" {
-    for_each = var.siem_endpoint_ip != "" ? [1] : []
-    content {
-      protocol   = "tcp"
-      rule_no    = 200
-      action     = "allow"
-      cidr_block = "${var.siem_endpoint_ip}/32"
-      from_port  = var.siem_endpoint_port
-      to_port    = var.siem_endpoint_port
-    }
-  }
-
-  # Allow DNS to VPC resolver
+  # Allow DNS outbound (UDP 53) to VPC resolver only
   egress {
     protocol   = "udp"
-    rule_no    = 300
+    rule_no    = 200
     action     = "allow"
-    cidr_block = var.vpc_cidr
+    cidr_block = cidrsubnet(var.vpc_cidr, 16, 0) # VPC DNS resolver
     from_port  = 53
     to_port    = 53
   }
 
-  # Allow S3 via VPC endpoint (HTTPS)
+  # Allow HTTPS outbound to SIEM endpoint only (if configured)
+  dynamic "egress" {
+    for_each = var.siem_endpoint != "" ? [1] : []
+    content {
+      protocol   = "tcp"
+      rule_no    = 300
+      action     = "allow"
+      cidr_block = "${split(":", var.siem_endpoint)[0]}/32"
+      from_port  = tonumber(split(":", var.siem_endpoint)[1])
+      to_port    = tonumber(split(":", var.siem_endpoint)[1])
+    }
+  }
+
+  # Allow HTTPS to AWS S3 (for log shipping via VPC endpoint)
   egress {
     protocol   = "tcp"
     rule_no    = 400
     action     = "allow"
-    cidr_block = "0.0.0.0/0"
+    cidr_block = var.vpc_cidr
     from_port  = 443
     to_port    = 443
   }
 
-  # Deny everything else
-  egress {
-    protocol   = -1
-    rule_no    = 900
-    action     = "deny"
-    cidr_block = "0.0.0.0/0"
-    from_port  = 0
-    to_port    = 0
+  tags = {
+    Name = "${var.name_prefix}-honeypot-nacl"
   }
-
-  tags = { Name = "honeyclaw-nacl-${var.environment}" }
 }
 
 # --- Security Groups ---
-
-resource "aws_security_group" "ssh_honeypot" {
-  name_prefix = "honeyclaw-ssh-"
+resource "aws_security_group" "honeypot" {
+  name_prefix = "${var.name_prefix}-honeypot-"
+  description = "Honeypot inbound access - allows attacker connections"
   vpc_id      = aws_vpc.honeypot.id
-  description = "SSH honeypot security group"
 
+  # SSH honeypot
   ingress {
-    description = "SSH"
+    description = "SSH honeypot"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
@@ -169,39 +177,16 @@ resource "aws_security_group" "ssh_honeypot" {
   }
 
   ingress {
-    description = "Health check"
-    from_port   = 9090
-    to_port     = 9090
-    protocol    = "tcp"
-    cidr_blocks = [var.vpc_cidr]
-  }
-
-  egress {
-    description = "SIEM only"
-    from_port   = var.siem_endpoint_port
-    to_port     = var.siem_endpoint_port
-    protocol    = "tcp"
-    cidr_blocks = var.siem_endpoint_ip != "" ? ["${var.siem_endpoint_ip}/32"] : []
-  }
-
-  egress {
-    description = "S3 endpoint"
-    from_port   = 443
-    to_port     = 443
+    description = "SSH honeypot alt port"
+    from_port   = 2222
+    to_port     = 2222
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = { Name = "honeyclaw-ssh-sg-${var.environment}" }
-}
-
-resource "aws_security_group" "api_honeypot" {
-  name_prefix = "honeyclaw-api-"
-  vpc_id      = aws_vpc.honeypot.id
-  description = "API honeypot security group"
-
+  # HTTP/HTTPS honeypot
   ingress {
-    description = "HTTP"
+    description = "HTTP honeypot"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
@@ -209,73 +194,150 @@ resource "aws_security_group" "api_honeypot" {
   }
 
   ingress {
-    description = "HTTPS"
+    description = "HTTPS honeypot"
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  # API honeypot
   ingress {
-    description = "API port"
+    description = "API honeypot"
     from_port   = 8080
     to_port     = 8080
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  # Enterprise simulation ports (RDP, WinRM, SMB, LDAP)
   ingress {
-    description = "Health check"
-    from_port   = 9090
-    to_port     = 9090
+    description = "RDP honeypot"
+    from_port   = 3389
+    to_port     = 3389
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "SMB honeypot"
+    from_port   = 445
+    to_port     = 445
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "LDAP honeypot"
+    from_port   = 389
+    to_port     = 389
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Egress: only to S3 VPC endpoint and SIEM
+  egress {
+    description = "S3 VPC endpoint (log shipping)"
+    from_port   = 443
+    to_port     = 443
     protocol    = "tcp"
     cidr_blocks = [var.vpc_cidr]
   }
 
   egress {
-    description = "S3 endpoint"
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    description = "DNS resolution"
+    from_port   = 53
+    to_port     = 53
+    protocol    = "udp"
+    cidr_blocks = [var.vpc_cidr]
   }
 
-  tags = { Name = "honeyclaw-api-sg-${var.environment}" }
+  tags = {
+    Name = "${var.name_prefix}-honeypot-sg"
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# --- S3 VPC Endpoint (private log shipping, no internet egress needed) ---
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id       = aws_vpc.honeypot.id
+  service_name = "com.amazonaws.${var.aws_region}.s3"
+
+  route_table_ids = [
+    aws_route_table.public.id,
+    aws_route_table.private.id,
+  ]
+
+  tags = {
+    Name = "${var.name_prefix}-s3-endpoint"
+  }
+}
+
+# --- CloudWatch Logs VPC Endpoint ---
+resource "aws_vpc_endpoint" "logs" {
+  vpc_id              = aws_vpc.honeypot.id
+  service_name        = "com.amazonaws.${var.aws_region}.logs"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = aws_subnet.private[*].id
+  private_dns_enabled = true
+
+  security_group_ids = [aws_security_group.honeypot.id]
+
+  tags = {
+    Name = "${var.name_prefix}-logs-endpoint"
+  }
 }
 
 # --- VPC Flow Logs ---
-
 resource "aws_flow_log" "honeypot" {
-  vpc_id               = aws_vpc.honeypot.id
-  traffic_type         = "ALL"
-  log_destination_type = "cloud-watch-logs"
-  log_destination      = aws_cloudwatch_log_group.flow_logs.arn
-  iam_role_arn         = aws_iam_role.flow_logs.arn
+  count = var.enable_flow_logs ? 1 : 0
 
-  tags = { Name = "honeyclaw-flow-logs-${var.environment}" }
+  iam_role_arn    = aws_iam_role.flow_logs[0].arn
+  log_destination = aws_cloudwatch_log_group.flow_logs[0].arn
+  traffic_type    = "ALL"
+  vpc_id          = aws_vpc.honeypot.id
+
+  tags = {
+    Name = "${var.name_prefix}-flow-logs"
+  }
 }
 
 resource "aws_cloudwatch_log_group" "flow_logs" {
-  name              = "/honeyclaw/${var.environment}/vpc-flow-logs"
+  count = var.enable_flow_logs ? 1 : 0
+
+  name              = "/honeyclaw/${var.name_prefix}/vpc-flow-logs"
   retention_in_days = 30
+
+  tags = {
+    Name = "${var.name_prefix}-flow-logs"
+  }
 }
 
 resource "aws_iam_role" "flow_logs" {
-  name_prefix = "honeyclaw-flow-logs-"
+  count = var.enable_flow_logs ? 1 : 0
+
+  name = "${var.name_prefix}-flow-logs-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Action = "sts:AssumeRole"
       Effect = "Allow"
-      Principal = { Service = "vpc-flow-logs.amazonaws.com" }
+      Principal = {
+        Service = "vpc-flow-logs.amazonaws.com"
+      }
     }]
   })
 }
 
 resource "aws_iam_role_policy" "flow_logs" {
-  name_prefix = "honeyclaw-flow-logs-"
-  role        = aws_iam_role.flow_logs.id
+  count = var.enable_flow_logs ? 1 : 0
+
+  name = "${var.name_prefix}-flow-logs-policy"
+  role = aws_iam_role.flow_logs[0].id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -285,48 +347,10 @@ resource "aws_iam_role_policy" "flow_logs" {
         "logs:CreateLogStream",
         "logs:PutLogEvents",
         "logs:DescribeLogGroups",
-        "logs:DescribeLogStreams"
+        "logs:DescribeLogStreams",
       ]
       Effect   = "Allow"
       Resource = "*"
     }]
   })
-}
-
-# --- S3 VPC Endpoint ---
-
-resource "aws_vpc_endpoint" "s3" {
-  vpc_id       = aws_vpc.honeypot.id
-  service_name = "com.amazonaws.${data.aws_region.current.name}.s3"
-
-  route_table_ids = [
-    aws_route_table.private.id,
-    aws_route_table.public.id,
-  ]
-
-  tags = { Name = "honeyclaw-s3-endpoint-${var.environment}" }
-}
-
-data "aws_region" "current" {}
-
-# --- Outputs ---
-
-output "vpc_id" {
-  value = aws_vpc.honeypot.id
-}
-
-output "private_subnet_ids" {
-  value = aws_subnet.private[*].id
-}
-
-output "public_subnet_ids" {
-  value = aws_subnet.public[*].id
-}
-
-output "ssh_honeypot_sg_id" {
-  value = aws_security_group.ssh_honeypot.id
-}
-
-output "api_honeypot_sg_id" {
-  value = aws_security_group.api_honeypot.id
 }

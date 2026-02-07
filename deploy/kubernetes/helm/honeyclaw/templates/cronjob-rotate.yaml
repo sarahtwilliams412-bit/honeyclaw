@@ -1,0 +1,63 @@
+{{- if .Values.rotation.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "honeyclaw.fullname" . }}-rotate
+  labels:
+    {{- include "honeyclaw.labels" . | nindent 4 }}
+    honeyclaw/component: rotation
+spec:
+  schedule: {{ .Values.rotation.schedule | quote }}
+  successfulJobsHistoryLimit: {{ .Values.rotation.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.rotation.failedJobsHistoryLimit }}
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            {{- include "honeyclaw.selectorLabels" . | nindent 12 }}
+            honeyclaw/component: rotation-job
+        spec:
+          serviceAccountName: {{ include "honeyclaw.serviceAccountName" . }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          restartPolicy: OnFailure
+          containers:
+            - name: rotate
+              image: bitnami/kubectl:latest
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  echo "Starting honeypot rotation at $(date -u)"
+
+                  # Trigger a rolling restart of the deployment
+                  # This forces new pods with fresh containers
+                  kubectl rollout restart deployment/{{ include "honeyclaw.fullname" . }} \
+                    -n {{ .Release.Namespace }}
+
+                  # Wait for rollout to complete
+                  kubectl rollout status deployment/{{ include "honeyclaw.fullname" . }} \
+                    -n {{ .Release.Namespace }} \
+                    --timeout=300s
+
+                  echo "Rotation completed successfully at $(date -u)"
+              resources:
+                limits:
+                  cpu: 100m
+                  memory: 64Mi
+                requests:
+                  cpu: 50m
+                  memory: 32Mi
+{{- end }}
