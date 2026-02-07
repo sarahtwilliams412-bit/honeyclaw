@@ -1,25 +1,41 @@
 {
+  "os": "Debian GNU/Linux",
   "os_name": "Debian GNU/Linux",
+  "version": "12 (bookworm)",
   "os_version": "12 (bookworm)",
+  "codename": "bookworm",
   "kernel": "6.1.0-17-amd64",
   "arch": "x86_64",
   "hostname": "db-primary",
   "os_release": "PRETTY_NAME=\"Debian GNU/Linux 12 (bookworm)\"\nNAME=\"Debian GNU/Linux\"\nVERSION_ID=\"12\"\nVERSION=\"12 (bookworm)\"\nVERSION_CODENAME=bookworm\nID=debian\nHOME_URL=\"https://www.debian.org/\"\nSUPPORT_URL=\"https://www.debian.org/support\"\nBUG_REPORT_URL=\"https://bugs.debian.org/\"\n",
+  "ssh_banner": "SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u2",
+  "motd": "Debian GNU/Linux 12 \\n \\l",
+  "package_manager": "apt",
+  "packages": {
+    "openssh-server": "1:9.2p1-2+deb12u2",
+    "nginx": "1.22.1-9",
+    "postgresql-15": "15.5-0+deb12u1",
+    "python3": "3.11.2-1+b1"
+  },
+  "services": ["sshd", "nginx", "postgresql", "cron"],
   "users": [
     {
       "name": "postgres",
+      "uid": 113,
       "home": "/var/lib/postgresql",
       "shell": "/bin/bash",
       "gecos": "PostgreSQL administrator"
     },
     {
       "name": "admin",
+      "uid": 1000,
       "home": "/home/admin",
       "shell": "/bin/bash",
       "gecos": "System Administrator"
     },
     {
       "name": "backup",
+      "uid": 1001,
       "home": "/home/backup",
       "shell": "/bin/bash",
       "gecos": "Backup Operator"
@@ -30,6 +46,16 @@
     "timedatectl", "networkctl",
     "psql", "pg_dump", "pg_restore"
   ],
-  "ssh_banner": "SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u2",
-  "package_manager": "apt"
+  "network": {
+    "interface": "ens3",
+    "ip": "10.0.0.35",
+    "netmask": "255.255.255.0",
+    "gateway": "10.0.0.1",
+    "dns": ["10.0.0.1"]
+  },
+  "tcp_fingerprint": {
+    "ttl": 64,
+    "window_size": 65535,
+    "options": "mss 1460,sackOK,TS val ecr,nop,wscale 7"
+  }
 }

@@ -1,0 +1,14 @@
+apiVersion: v2
+name: honeyclaw
+description: HoneyClaw Honeypot Framework - Kubernetes Deployment
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - honeypot
+  - security
+  - threat-intelligence
+  - deception
+home: https://github.com/sarahtwilliams412-bit/honeyclaw
+maintainers:
+  - name: honeyclaw

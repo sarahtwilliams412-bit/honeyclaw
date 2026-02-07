@@ -31,6 +31,7 @@ class RecordingMetadata:
     end_time: Optional[str] = None
     duration_ms: Optional[int] = None
     username: Optional[str] = None
+    correlation_id: Optional[str] = None  # Links events from same attacker across services
     event_count: int = 0
     bytes_in: int = 0
     bytes_out: int = 0
@@ -102,7 +103,8 @@ class SSHRecorder(SessionRecorder):
         dest_port: int = 22,
         width: int = 80,
         height: int = 24,
-        username: Optional[str] = None
+        username: Optional[str] = None,
+        correlation_id: Optional[str] = None
     ):
         super().__init__(session_id)
         self.width = width
@@ -113,7 +115,7 @@ class SSHRecorder(SessionRecorder):
         self.username = username
         self.bytes_in = 0
         self.bytes_out = 0
-        
+
         # Initialize metadata
         self.metadata = RecordingMetadata(
             session_id=self.session_id,
@@ -122,7 +124,8 @@ class SSHRecorder(SessionRecorder):
             source_port=source_port,
             dest_port=dest_port,
             start_time=self.start_timestamp,
-            username=username
+            username=username,
+            correlation_id=correlation_id
         )
     
     def record_output(self, data: str) -> None:
@@ -232,7 +235,8 @@ class HTTPRecorder(SessionRecorder):
         session_id: Optional[str] = None,
         source_ip: str = "unknown",
         source_port: int = 0,
-        dest_port: int = 80
+        dest_port: int = 80,
+        correlation_id: Optional[str] = None
     ):
         super().__init__(session_id)
         self.source_ip = source_ip
@@ -241,7 +245,7 @@ class HTTPRecorder(SessionRecorder):
         self.entries: List[Dict[str, Any]] = []
         self.bytes_in = 0
         self.bytes_out = 0
-        
+
         # Initialize metadata
         self.metadata = RecordingMetadata(
             session_id=self.session_id,
@@ -249,7 +253,8 @@ class HTTPRecorder(SessionRecorder):
             source_ip=source_ip,
             source_port=source_port,
             dest_port=dest_port,
-            start_time=self.start_timestamp
+            start_time=self.start_timestamp,
+            correlation_id=correlation_id
         )
         
     def record_request(

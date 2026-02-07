@@ -1,13 +1,28 @@
 {
+  "os": "Amazon Linux",
   "os_name": "Amazon Linux",
+  "version": "2",
   "os_version": "2",
+  "codename": "Karoo",
   "kernel": "5.10.205-195.807.amzn2.x86_64",
   "arch": "x86_64",
   "hostname": "ip-10-0-1-42",
   "os_release": "NAME=\"Amazon Linux\"\nVERSION=\"2\"\nID=\"amzn\"\nID_LIKE=\"centos rhel fedora\"\nVERSION_ID=\"2\"\nPRETTY_NAME=\"Amazon Linux 2\"\nANSI_COLOR=\"0;33\"\nCPE_NAME=\"cpe:2.3:o:amazon:amazon_linux:2\"\nHOME_URL=\"https://amazonlinux.com/\"\n",
+  "ssh_banner": "SSH-2.0-OpenSSH_7.4",
+  "motd": "       __|  __|_  )\n       _|  (     /   Amazon Linux 2 AMI\n      ___|\\___|\\___|",
+  "package_manager": "yum",
+  "packages": {
+    "openssh-server": "7.4p1-22.amzn2.0.4",
+    "httpd": "2.4.58-1.amzn2",
+    "docker": "20.10.25-1.amzn2.0.3",
+    "python3": "3.7.16-1.amzn2.0.6",
+    "aws-cli": "1.32.23-1.amzn2.0.1"
+  },
+  "services": ["sshd", "httpd", "docker", "crond", "amazon-ssm-agent"],
   "users": [
     {
       "name": "ec2-user",
+      "uid": 1000,
       "home": "/home/ec2-user",
       "shell": "/bin/bash",
       "gecos": "EC2 Default User",
@@ -15,6 +30,7 @@
     },
     {
       "name": "ssm-user",
+      "uid": 1001,
       "home": "/home/ssm-user",
       "shell": "/bin/bash",
       "gecos": "SSM Default User"
@@ -25,6 +41,16 @@
     "aws", "imds-utils", "journalctl",
     "timedatectl", "docker"
   ],
-  "ssh_banner": "SSH-2.0-OpenSSH_7.4",
-  "package_manager": "yum"
+  "network": {
+    "interface": "eth0",
+    "ip": "10.0.0.40",
+    "netmask": "255.255.255.0",
+    "gateway": "10.0.0.1",
+    "dns": ["10.0.0.2"]
+  },
+  "tcp_fingerprint": {
+    "ttl": 64,
+    "window_size": 26883,
+    "options": "mss 8961,sackOK,TS val ecr,nop,wscale 8"
+  }
 }

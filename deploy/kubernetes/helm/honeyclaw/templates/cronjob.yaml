@@ -1,0 +1,68 @@
+{{- if .Values.rotation.enabled }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: honeyclaw-rotation
+  labels:
+    app: honeyclaw
+    component: rotation
+spec:
+  schedule: {{ .Values.rotation.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: honeyclaw-rotation
+          restartPolicy: OnFailure
+          containers:
+            - name: rotate
+              image: bitnami/kubectl:latest
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  echo "=== Honeyclaw Pod Rotation: $(date -u) ==="
+                  {{- range $.Values.templates }}
+                  {{- if .enabled }}
+                  echo "Rotating honeyclaw-{{ .name }}..."
+                  kubectl rollout restart deployment/honeyclaw-{{ .name }}
+                  kubectl rollout status deployment/honeyclaw-{{ .name }} --timeout=300s
+                  {{- end }}
+                  {{- end }}
+                  echo "=== Rotation Complete ==="
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: honeyclaw-rotation
+  labels:
+    app: honeyclaw
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: honeyclaw-rotation
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/status"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: honeyclaw-rotation
+subjects:
+  - kind: ServiceAccount
+    name: honeyclaw-rotation
+roleRef:
+  kind: Role
+  name: honeyclaw-rotation
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

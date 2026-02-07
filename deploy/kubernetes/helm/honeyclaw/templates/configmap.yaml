@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "honeyclaw.fullname" . }}
+  labels:
+    {{- include "honeyclaw.labels" . | nindent 4 }}
+data:
+  HONEYCLAW_TEMPLATE: {{ .Values.template | quote }}
+  {{- range $key, $value := .Values.env }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}

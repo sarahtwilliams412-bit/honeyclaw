@@ -1,0 +1,56 @@
+# HoneyClaw - Fake API Honeypot Fly.io Template
+#
+# Medium-interaction REST API honeypot that mimics a vulnerable API.
+#
+# Usage:
+#   cp deploy/flyio/fly-fake-api.toml fly.toml
+#   fly apps create honeyclaw-api-<region>
+#   fly secrets set ALERT_WEBHOOK_URL=<url>
+#   fly deploy
+
+app = "honeyclaw-api"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "templates/fake-api/Dockerfile"
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+
+  [[services.ports]]
+    handlers = ["http"]
+    port = 80
+
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port = 443
+
+  [services.concurrency]
+    hard_limit = 500
+    soft_limit = 250
+    type = "requests"
+
+  [[services.http_checks]]
+    interval = 10000
+    grace_period = "15s"
+    method = "get"
+    path = "/health"
+    protocol = "http"
+    timeout = 5000
+
+[env]
+  PORT = "8080"
+  NODE_ENV = "production"
+  HONEYCLAW_TEMPLATE = "fake-api"
+  LOG_PATH = "/data/logs/api.json"
+  RATELIMIT_ENABLED = "true"
+
+[mounts]
+  source = "honeyclaw_data"
+  destination = "/data"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256

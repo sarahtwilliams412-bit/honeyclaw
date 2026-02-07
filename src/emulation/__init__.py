@@ -1,12 +1,18 @@
 """
 HoneyClaw Emulation Layer - Stateful Interaction & Realistic Environment
 
-Provides realistic filesystem emulation, state-aware shell, and timing
-simulation to increase attacker dwell time and intelligence gathering.
+Provides realistic filesystem emulation, state-aware shell, timing simulation,
+and OS profiles for realistic honeypot interaction to increase attacker dwell
+time and intelligence gathering.
 """
 
-from src.emulation.filesystem import FakeFilesystem
-from src.emulation.shell import ShellEmulator
-from src.emulation.timing import TimingSimulator
+from .filesystem import FakeFilesystem, load_profile
+from .shell import ShellEmulator
+from .timing import TimingSimulator
 
-__all__ = ["FakeFilesystem", "ShellEmulator", "TimingSimulator"]
+__all__ = [
+    "FakeFilesystem",
+    "ShellEmulator",
+    "TimingSimulator",
+    "load_profile",
+]

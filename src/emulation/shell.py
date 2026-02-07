@@ -1,9 +1,17 @@
+#!/usr/bin/env python3
 """
-State-Aware Shell Emulator
+Honeyclaw Stateful Shell Emulator
 
-Maintains CWD, environment variables, command history, and user context.
-Provides built-in handlers for common Linux commands that return realistic
-output from the FakeFilesystem.
+Maintains shell state (cwd, env, history, user context) across commands
+and provides realistic responses for common Linux commands.
+
+Features:
+- State-aware command execution backed by FakeFilesystem
+- Pipe handling and command chaining
+- Environment variable expansion
+- Timing simulation for realistic delays
+- Event callbacks for logging/alerting
+- Canary token detection
 """
 
 import random
@@ -11,40 +19,46 @@ import re
 import shlex
 import time
 from datetime import datetime
-from typing import Callable, Dict, List, Optional, Tuple
+from pathlib import PurePosixPath
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from src.emulation.filesystem import FakeFilesystem
+from .filesystem import FakeFilesystem
+from .timing import TimingSimulator
 
 
 class ShellEmulator:
     """
     Interactive shell emulator backed by a FakeFilesystem. Maintains session
     state (cwd, env, history) and dispatches commands to built-in handlers.
+    Integrates timing simulation for realistic response delays.
     """
 
     def __init__(
         self,
-        filesystem: FakeFilesystem,
+        filesystem: Optional[FakeFilesystem] = None,
         username: str = "root",
         hostname: str = "server-01",
         uid: int = 0,
         gid: int = 0,
         groups: Optional[List[str]] = None,
-        home: str = "/root",
+        home: Optional[str] = None,
+        timing: Optional[TimingSimulator] = None,
         on_command: Optional[Callable] = None,
         on_canary: Optional[Callable] = None,
+        on_event: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     ):
-        self.fs = filesystem
+        self.fs = filesystem or FakeFilesystem(username=username)
         self.username = username
         self.hostname = hostname
         self.uid = uid
         self.gid = gid
-        self.groups = groups or (["root"] if uid == 0 else [username])
-        self.home = home
-        self.cwd = home if filesystem.is_dir(home) else "/"
+        self.groups = groups or (["root"] if uid == 0 else [username, "sudo"])
+        self.home = home or ("/root" if uid == 0 else f"/home/{username}")
+        self.cwd = self.home if self.fs.is_dir(self.home) else "/"
+        self.timing = timing or TimingSimulator()
 
         self.env: Dict[str, str] = {
-            "HOME": home,
+            "HOME": self.home,
             "USER": username,
             "LOGNAME": username,
             "SHELL": "/bin/bash",
@@ -59,6 +73,7 @@ class ShellEmulator:
         self.last_exit_code = 0
         self._on_command = on_command
         self._on_canary = on_canary
+        self._on_event = on_event
 
         # Built-in command registry
         self._builtins: Dict[str, Callable] = {
@@ -98,6 +113,7 @@ class ShellEmulator:
             "free": self._cmd_free,
             "uptime": self._cmd_uptime,
             "w": self._cmd_w,
+            "who": self._cmd_who,
             "last": self._cmd_last,
             "history": self._cmd_history,
             "ifconfig": self._cmd_ifconfig,
@@ -137,6 +153,10 @@ class ShellEmulator:
             display_cwd = "~" + display_cwd[len(self.home):]
         return f"{self.username}@{self.hostname}:{display_cwd}{suffix} "
 
+    def get_prompt(self) -> str:
+        """Alias for prompt property."""
+        return self.prompt
+
     def execute(self, line: str) -> Tuple[str, int]:
         """
         Execute a command line. Returns (output, exit_code).
@@ -151,16 +171,17 @@ class ShellEmulator:
         # Callback for command logging
         if self._on_command:
             self._on_command(line, self.cwd, self.username)
+        self._emit("command", {"command": line, "cwd": self.cwd})
 
         # Handle pipes (basic: run each command, feed output forward)
         if "|" in line:
             return self._handle_pipe(line)
 
         # Handle output redirection (just swallow it)
-        redir_target = None
         for redir in [" >> ", " > ", " 2>&1", " 2>/dev/null"]:
             if redir in line:
                 line = line.split(redir)[0].strip()
+                self._emit("file_write", {"command": line})
                 break
 
         # Handle command chaining with ; or &&
@@ -214,6 +235,16 @@ class ShellEmulator:
         # Unknown command
         self.last_exit_code = 127
         return f"bash: {cmd}: command not found", 127
+
+    def execute_with_delay(self, line: str) -> Tuple[str, int, float]:
+        """
+        Execute a command and return (output, exit_code, delay_seconds).
+        Uses timing simulator for realistic delays.
+        """
+        output, code = self.execute(line)
+        cmd = line.strip().split()[0] if line.strip() else ""
+        delay = self.timing.command_delay(cmd)
+        return output, code, delay
 
     # ------------------------------------------------------------------
     # Pipe handling
@@ -318,6 +349,20 @@ class ShellEmulator:
         return re.sub(r'\$\{(\w+)\}|\$(\w+|\?)', replacer, line)
 
     # ------------------------------------------------------------------
+    # Event emission
+    # ------------------------------------------------------------------
+
+    def _emit(self, event_type: str, data: Dict[str, Any]):
+        """Emit an event for logging/alerting."""
+        if self._on_event:
+            data["username"] = self.username
+            data["timestamp"] = time.time()
+            try:
+                self._on_event(event_type, data)
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------
     # Built-in command handlers
     # ------------------------------------------------------------------
 
@@ -346,7 +391,7 @@ class ShellEmulator:
 
             if not node.is_dir:
                 if long_format:
-                    all_output.append(self._ls_long_line(node))
+                    all_output.append(node.ls_entry())
                 else:
                     all_output.append(node.name)
                 continue
@@ -359,18 +404,12 @@ class ShellEmulator:
                 total = sum(max(c.size // 1024, 1) for c in children)
                 all_output.append(f"total {total}")
                 for child in children:
-                    all_output.append(self._ls_long_line(child))
+                    all_output.append(child.ls_entry())
             else:
                 names = [c.name for c in children]
                 all_output.append("  ".join(names))
 
         return "\n".join(all_output), 0
-
-    def _ls_long_line(self, node) -> str:
-        return (
-            f"{node.permissions} {node.links:>2} {node.owner:<8} {node.group:<8} "
-            f"{node.size:>8} {node.mtime_str()} {node.name}"
-        )
 
     def _cmd_cat(self, args: List[str]) -> Tuple[str, int]:
         if not args:
@@ -384,6 +423,7 @@ class ShellEmulator:
             if self.fs.is_canary(path, self.cwd):
                 if self._on_canary:
                     self._on_canary(path, self.fs.get_canary_id(path, self.cwd))
+                self._emit("canary_triggered", {"path": path, "token": self.fs.get_canary_id(path, self.cwd)})
             content = self.fs.read_file(path, self.cwd)
             if content is None:
                 node = self.fs.resolve(path, self.cwd)
@@ -394,6 +434,7 @@ class ShellEmulator:
                 code = 1
             else:
                 outputs.append(content.rstrip("\n"))
+                self._emit("file_read", {"path": path, "size": len(content)})
         return "\n".join(outputs), code
 
     def _cmd_cd(self, args: List[str]) -> Tuple[str, int]:
@@ -487,6 +528,7 @@ class ShellEmulator:
         connections = [
             "tcp        0      0 0.0.0.0:22              0.0.0.0:*               LISTEN",
             "tcp        0      0 0.0.0.0:80              0.0.0.0:*               LISTEN",
+            "tcp        0      0 0.0.0.0:443             0.0.0.0:*               LISTEN",
             "tcp        0      0 127.0.0.1:3306          0.0.0.0:*               LISTEN",
             f"tcp        0    288 10.0.0.5:22             {random.randint(1,254)}.{random.randint(1,254)}.{random.randint(1,254)}.{random.randint(1,254)}:{random.randint(30000,65535)}         ESTABLISHED",
             "udp        0      0 127.0.0.53:53           0.0.0.0:*",
@@ -501,13 +543,14 @@ class ShellEmulator:
             if not a.startswith("-"):
                 url = a
                 break
+        self._emit("download_attempt", {"command": "wget", "url": url or "unknown"})
         if not url:
             return "wget: missing URL\nUsage: wget [OPTION]... [URL]...", 1
-        filename = url.rstrip("/").split("/")[-1] or "index.html"
+        host = url.split("/")[2] if "/" in url and len(url.split("/")) > 2 else url
         return (
             f"--{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}--  {url}\n"
-            f"Resolving {url.split('/')[2]}... failed: Temporary failure in name resolution.\n"
-            f"wget: unable to resolve host address '{url.split('/')[2]}'"
+            f"Resolving {host}... failed: Temporary failure in name resolution.\n"
+            f"wget: unable to resolve host address '{host}'"
         ), 4
 
     def _cmd_curl(self, args: List[str]) -> Tuple[str, int]:
@@ -516,12 +559,14 @@ class ShellEmulator:
             if not a.startswith("-"):
                 url = a
                 break
+        self._emit("download_attempt", {"command": "curl", "url": url or "unknown"})
         if not url:
             return "curl: try 'curl --help' for more information", 2
         host = url.split("/")[2] if "/" in url and len(url.split("/")) > 2 else url
         return f"curl: (6) Could not resolve host: {host}", 6
 
     def _cmd_sudo(self, args: List[str]) -> Tuple[str, int]:
+        self._emit("privilege_escalation", {"command": "sudo " + " ".join(args)})
         if not args:
             return "usage: sudo [-h] command", 1
         if self.uid == 0:
@@ -530,9 +575,11 @@ class ShellEmulator:
         return self.execute(" ".join(args))
 
     def _cmd_su(self, args: List[str]) -> Tuple[str, int]:
+        self._emit("privilege_escalation", {"command": "su " + " ".join(args)})
         return "su: Authentication failure", 1
 
     def _cmd_scp(self, args: List[str]) -> Tuple[str, int]:
+        self._emit("lateral_movement", {"command": "scp " + " ".join(args)})
         target = args[-1] if args else ""
         return f"ssh: connect to host {target.split(':')[0]} port 22: Network is unreachable", 1
 
@@ -542,6 +589,7 @@ class ShellEmulator:
             if not a.startswith("-"):
                 host = a
                 break
+        self._emit("lateral_movement", {"command": "ssh " + " ".join(args)})
         if not host:
             return "usage: ssh [-46AaCfGgKkMNnqsTtVvXxYy] destination", 255
         return f"ssh: connect to host {host} port 22: Network is unreachable", 255
@@ -651,6 +699,8 @@ class ShellEmulator:
             else:
                 i += 1
 
+        self._emit("recon", {"command": "find", "path": search_path, "pattern": name_pat})
+
         results = []
         self._find_recursive(search_path, self.cwd, name_pat, results, depth=0)
         return "\n".join(results) if results else "", 0
@@ -696,13 +746,17 @@ class ShellEmulator:
         known_binaries = {
             "bash": "/usr/bin/bash", "sh": "/usr/bin/sh", "ls": "/usr/bin/ls",
             "cat": "/usr/bin/cat", "grep": "/usr/bin/grep", "find": "/usr/bin/find",
-            "python3": "/usr/bin/python3", "ssh": "/usr/bin/ssh", "scp": "/usr/bin/scp",
+            "python3": "/usr/bin/python3", "python": "/usr/bin/python3",
+            "ssh": "/usr/bin/ssh", "scp": "/usr/bin/scp",
             "wget": "/usr/bin/wget", "curl": "/usr/bin/curl", "sudo": "/usr/bin/sudo",
             "systemctl": "/usr/bin/systemctl", "journalctl": "/usr/bin/journalctl",
             "ip": "/usr/sbin/ip", "netstat": "/usr/bin/netstat", "ss": "/usr/sbin/ss",
             "ps": "/usr/bin/ps", "top": "/usr/bin/top", "htop": "/usr/bin/htop",
             "nano": "/usr/bin/nano", "vi": "/usr/bin/vi", "vim": "/usr/bin/vim",
             "apt": "/usr/bin/apt", "dpkg": "/usr/bin/dpkg",
+            "docker": "/usr/bin/docker", "kubectl": "/usr/local/bin/kubectl",
+            "aws": "/usr/local/bin/aws", "mysql": "/usr/bin/mysql",
+            "psql": "/usr/bin/psql", "git": "/usr/bin/git",
         }
         if not args:
             return "", 1
@@ -736,8 +790,10 @@ class ShellEmulator:
                 outputs.append(f"{path}: cannot open (No such file or directory)")
             elif node.is_dir:
                 outputs.append(f"{path}: directory")
-            elif path.endswith((".py", ".sh", ".bash")):
-                outputs.append(f"{path}: ASCII text")
+            elif path.endswith(".py"):
+                outputs.append(f"{path}: Python script, ASCII text executable")
+            elif path.endswith((".sh", ".bash")):
+                outputs.append(f"{path}: Bourne-Again shell script, ASCII text executable")
             elif path.endswith((".so", ".o")):
                 outputs.append(f"{path}: ELF 64-bit LSB shared object, x86-64")
             else:
@@ -789,7 +845,7 @@ class ShellEmulator:
         avail = free_mem + buff
         header = "               total        used        free      shared  buff/cache   available"
         mem_line = f"Mem:       {total:>10}  {used:>10}  {free_mem:>10}  {shared:>10}  {buff:>10}  {avail:>10}"
-        swap_line = f"Swap:       2097148           0     2097148"
+        swap_line = "Swap:       2097148           0     2097148"
         return header + "\n" + mem_line + "\n" + swap_line, 0
 
     def _cmd_uptime(self, args: List[str]) -> Tuple[str, int]:
@@ -816,6 +872,12 @@ class ShellEmulator:
             f"{datetime.now().strftime('%H:%M')}    0.00s  0.04s  0.00s w"
         )
         return uptime_output + "\n" + header + "\n" + user_line, 0
+
+    def _cmd_who(self, args: List[str]) -> Tuple[str, int]:
+        return (
+            f"{self.username:<8} pts/0        {datetime.now().strftime('%Y-%m-%d %H:%M')} (10.0.0.50)\n"
+            f"root     pts/1        {datetime.now().strftime('%Y-%m-%d %H:%M')} (10.0.0.1)"
+        ), 0
 
     def _cmd_last(self, args: List[str]) -> Tuple[str, int]:
         lines = [
@@ -892,14 +954,13 @@ class ShellEmulator:
         return datetime.now().strftime("%a %b %d %H:%M:%S UTC %Y"), 0
 
     def _cmd_touch(self, args: List[str]) -> Tuple[str, int]:
-        # Touch is a no-op on our read-only-ish filesystem
         return "", 0
 
     def _cmd_mkdir_cmd(self, args: List[str]) -> Tuple[str, int]:
         return "", 0
 
     def _cmd_rm(self, args: List[str]) -> Tuple[str, int]:
-        # Pretend it worked
+        self._emit("file_delete", {"command": "rm " + " ".join(args)})
         return "", 0
 
     def _cmd_cp(self, args: List[str]) -> Tuple[str, int]:

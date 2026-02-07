@@ -79,16 +79,24 @@ class HoneypotEvent:
     tags: List[str] = field(default_factory=list)
     mitre_tactics: List[str] = field(default_factory=list)
     mitre_techniques: List[str] = field(default_factory=list)
+    mitre_technique_names: List[str] = field(default_factory=list)
     
     # Session tracking
     session_id: Optional[str] = None
     session_duration_ms: Optional[int] = None
-    
+
+    # Correlation (for linking multi-step attacks across services)
+    correlation_id: Optional[str] = None
+
     # Geolocation (if available)
     geo_country: Optional[str] = None
+    geo_country_code: Optional[str] = None
     geo_city: Optional[str] = None
+    geo_lat: Optional[float] = None
+    geo_lon: Optional[float] = None
     geo_asn: Optional[str] = None
-    
+    geo_asn_org: Optional[str] = None
+
     # Raw data (for forensics)
     raw_data: Optional[Dict[str, Any]] = None
     

@@ -1,9 +1,15 @@
+#!/usr/bin/env python3
 """
-Fake Filesystem Emulation
+Honeyclaw Fake Filesystem
 
-Generates and maintains a realistic in-memory filesystem tree based on
-OS profiles. Supports canary token embedding, realistic metadata
-(permissions, ownership, timestamps, sizes), and /proc emulation.
+Generates and maintains a realistic filesystem tree with:
+- OS-appropriate directory structure based on profiles
+- Fake /etc/passwd, /etc/shadow, /etc/hosts
+- Realistic home directories with .bash_history, .ssh/, .aws/
+- Canary tokens embedded in config files
+- Process list simulation (/proc entries)
+- Size, permission, timestamp metadata
+- Symlink support
 """
 
 import json
@@ -11,8 +17,9 @@ import os
 import random
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import PurePosixPath
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -30,6 +37,15 @@ class FileNode:
     symlink_target: Optional[str] = None
     children: Dict[str, "FileNode"] = field(default_factory=dict)
 
+    def __post_init__(self):
+        if self.is_dir and not self.permissions.startswith("d"):
+            self.permissions = "d" + self.permissions[1:]
+        if not self.size and self.content:
+            self.size = len(self.content.encode())
+        if not self.mtime:
+            # Random time in last 90 days
+            self.mtime = time.time() - random.randint(0, 90 * 86400)
+
     @property
     def is_symlink(self) -> bool:
         return self.symlink_target is not None
@@ -42,18 +58,27 @@ class FileNode:
             return time.strftime("%b %d %H:%M", t)
         return time.strftime("%b %d  %Y", t)
 
+    def ls_entry(self) -> str:
+        """Generate ls -la style entry."""
+        date_str = self.mtime_str()
+        link_count = len(self.children) + 2 if self.is_dir else self.links
+        size_str = str(self.size) if not self.is_dir else "4096"
+        return f"{self.permissions} {link_count:>3} {self.owner:<8} {self.group:<8} {size_str:>8} {date_str} {self.name}"
+
 
 class FakeFilesystem:
     """
     In-memory filesystem tree that generates realistic directory structures
-    based on an OS profile. Supports navigation, listing, reading, and
-    canary token embedding.
+    based on an OS profile. Supports navigation, listing, reading, canary
+    token embedding, and symlinks.
     """
 
-    def __init__(self, profile: Optional[dict] = None):
+    def __init__(self, profile: Optional[dict] = None, username: str = "user"):
         self._root = FileNode(name="/", is_dir=True, permissions="drwxr-xr-x",
                               links=20, mtime=time.time() - 86400 * 30)
         self._profile = profile or {}
+        self.profile = self._profile  # Alias for compatibility
+        self.username = username
         self._canary_files: Dict[str, str] = {}
         self._boot_time = time.time() - random.randint(86400, 86400 * 60)
         self._build_base_tree()
@@ -97,6 +122,10 @@ class FakeFilesystem:
     def exists(self, path: str, cwd: str = "/") -> bool:
         return self.resolve(path, cwd) is not None
 
+    def file_exists(self, path: str, cwd: str = "/") -> bool:
+        """Alias for exists()."""
+        return self.exists(path, cwd)
+
     def is_dir(self, path: str, cwd: str = "/") -> bool:
         node = self.resolve(path, cwd)
         return node is not None and node.is_dir
@@ -131,9 +160,10 @@ class FakeFilesystem:
             "/etc", "/etc/ssh", "/etc/apt", "/etc/default", "/etc/network",
             "/etc/systemd", "/etc/systemd/system", "/etc/cron.d",
             "/var", "/var/log", "/var/lib", "/var/run", "/var/tmp", "/var/cache",
+            "/var/www", "/var/www/html",
             "/home", "/root",
             "/tmp", "/dev", "/proc", "/sys", "/opt", "/srv", "/mnt", "/media",
-            "/run", "/boot",
+            "/run", "/boot", "/lib", "/lib64",
         ]
         for d in base_dirs:
             self._mkdir(d)
@@ -162,12 +192,20 @@ class FakeFilesystem:
         self._add_file("/var/log/kern.log", "", size=random.randint(5000, 40000))
         self._add_file("/var/log/dpkg.log", "", size=random.randint(20000, 100000))
 
+        # /var/www
+        self._add_file("/var/www/html/index.html",
+                       "<html><body><h1>Welcome</h1></body></html>\n",
+                       owner="www-data", group="www-data")
+
         # /tmp
         self._mkdir("/tmp", perms="drwxrwxrwt")
         self._add_file("/tmp/.X0-lock", "1234\n", perms="-r--r--r--")
 
         # /proc - dynamic entries
         self._build_proc()
+
+        # /opt application dirs with breadcrumbs
+        self._build_opt()
 
     def _build_proc(self):
         """Generate realistic /proc entries."""
@@ -189,10 +227,32 @@ class FakeFilesystem:
         self._add_file("/proc/1/cmdline", "/sbin/init\x00")
         self._add_file("/proc/1/status", "Name:\tinit\nPid:\t1\nUid:\t0\t0\t0\t0\n")
 
+    def _build_opt(self):
+        """Create /opt application directories with breadcrumbs."""
+        self._mkdir("/opt/app")
+        self._add_file("/opt/app/.env", """# Application Environment
+NODE_ENV=production
+DATABASE_URL=postgresql://admin:Pr0dDBp@ss!@10.0.0.5:5432/maindb
+REDIS_URL=redis://10.0.0.10:6379
+SECRET_KEY=canary_secret_4eC39HqLyjWDarjtT1zdp7dc
+API_KEY=ak_prod_9f8e7d6c5b4a3210
+AWS_BUCKET=company-uploads
+""", perms="-rw-------")
+
+        self._mkdir("/opt/backups")
+        self._mkdir("/opt/backups/keys")
+        self._add_file("/opt/backups/keys/id_rsa", """-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAABlwAAAAdzc2gtcn
+NhAAAAAwEAAQAAAYEA0EXAMPLE_CANARY_KEY_NOT_REAL_0000000000000000000000
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
+-----END OPENSSH PRIVATE KEY-----
+""", perms="-rw-------")
+
     def _apply_profile(self, profile: dict):
         """Apply an OS profile to populate OS-specific files."""
-        os_name = profile.get("os_name", "Ubuntu")
-        os_version = profile.get("os_version", "22.04")
+        # Support both key naming conventions
+        os_name = profile.get("os_name") or profile.get("os", "Ubuntu")
+        os_version = profile.get("os_version") or profile.get("version", "22.04")
         kernel = profile.get("kernel", "5.15.0-91-generic")
         arch = profile.get("arch", "x86_64")
 
@@ -202,8 +262,8 @@ class FakeFilesystem:
             os_release = (
                 f'NAME="{os_name}"\n'
                 f'VERSION="{os_version}"\n'
-                f'ID={os_name.lower()}\n'
-                f'VERSION_ID="{os_version}"\n'
+                f'ID={os_name.lower().replace(" ", "")}\n'
+                f'VERSION_ID="{os_version.split()[0]}"\n'
                 f'PRETTY_NAME="{os_name} {os_version}"\n'
             )
         self._update_file("/etc/os-release", os_release)
@@ -220,31 +280,51 @@ class FakeFilesystem:
         # hostname
         hostname = profile.get("hostname", "server-01")
         self._update_file("/etc/hostname", hostname + "\n")
+        self._update_file("/etc/hosts", self._gen_hosts(hostname))
 
         # /proc/version
         proc_version = (
-            f"Linux version {kernel} ({os_name.lower()}-builder@build) "
-            f"(gcc version 11.4.0) #101-{os_name} SMP "
+            f"Linux version {kernel} ({os_name.lower().replace(' ', '-')}-builder@build) "
+            f"(gcc version 11.4.0) #101-{os_name.split()[0]} SMP "
             f"Tue Nov 14 13:30:08 UTC 2025\n"
         )
         self._update_file("/proc/version", proc_version)
 
-        # home directories
+        # home directories for users
         for user in users:
-            if user.get("home"):
-                home = user["home"]
-                self._mkdir(home, perms="drwxr-xr-x", owner=user["name"])
-                self._mkdir(home + "/.ssh", perms="drwx------", owner=user["name"])
-                self._add_file(home + "/.bashrc", self._gen_bashrc(user["name"]),
-                               owner=user["name"])
+            user_name = user.get("name", "")
+            if not user_name or user_name in ("root", "www-data", "daemon", "sshd", "nobody"):
+                continue
+
+            home = user.get("home", f"/home/{user_name}")
+            if home.startswith("/home/") or home.startswith("/var/"):
+                self._mkdir(home, perms="drwxr-xr-x", owner=user_name)
+                self._mkdir(home + "/.ssh", perms="drwx------", owner=user_name)
+                self._add_file(home + "/.bashrc", self._gen_bashrc(user_name),
+                               owner=user_name)
                 self._add_file(home + "/.bash_history",
-                               self._gen_bash_history(), owner=user["name"],
+                               self._gen_bash_history(), owner=user_name,
                                perms="-rw-------")
+                # Desktop directories for interactive users
+                if user.get("shell", "/bin/bash") != "/usr/sbin/nologin":
+                    self._mkdir(home + "/Desktop", owner=user_name)
+                    self._mkdir(home + "/Documents", owner=user_name)
+                    self._mkdir(home + "/Downloads", owner=user_name)
+
+                    # Notes breadcrumb
+                    self._add_file(home + "/notes.txt", """TODO:
+- Update database password (still using old one from migration)
+- Fix SSL cert renewal - expires March 15
+- Move backup keys to vault (currently in /opt/backups/keys/)
+- Ask Sarah about the new VPN config
+- DB connection string: postgresql://admin:Pr0dDBp@ss!@10.0.0.5:5432/maindb
+""", owner=user_name)
+
                 # Fake .aws directory for select users
                 if user.get("has_aws"):
-                    self._mkdir(home + "/.aws", perms="drwxr-xr-x", owner=user["name"])
+                    self._mkdir(home + "/.aws", perms="drwx------", owner=user_name)
                     self._add_file(home + "/.aws/credentials",
-                                   self._gen_aws_credentials(), owner=user["name"],
+                                   self._gen_aws_credentials(), owner=user_name,
                                    perms="-rw-------")
 
         # Extra packages / binaries from profile
@@ -272,15 +352,21 @@ class FakeFilesystem:
             "www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin",
             "backup:x:34:34:backup:/var/backups:/usr/sbin/nologin",
             "nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin",
+            "systemd-network:x:100:102:systemd Network Management,,,:/run/systemd:/usr/sbin/nologin",
             "sshd:x:110:65534::/run/sshd:/usr/sbin/nologin",
         ]
         uid = 1000
         for u in users:
-            home = u.get("home", f"/home/{u['name']}")
+            name = u.get("name", "")
+            if not name or name in ("root", "www-data", "daemon", "sshd", "nobody"):
+                continue
+            home = u.get("home", f"/home/{name}")
             shell = u.get("shell", "/bin/bash")
-            gecos = u.get("gecos", u["name"])
-            lines.append(f"{u['name']}:x:{uid}:{uid}:{gecos}:{home}:{shell}")
-            uid += 1
+            gecos = u.get("gecos", name)
+            user_uid = u.get("uid", uid)
+            lines.append(f"{name}:x:{user_uid}:{user_uid}:{gecos}:{home}:{shell}")
+            if user_uid >= uid:
+                uid = user_uid + 1
         return "\n".join(lines) + "\n"
 
     def _gen_shadow(self, users: list) -> str:
@@ -290,7 +376,9 @@ class FakeFilesystem:
             "sshd:*:19700:0:99999:7:::",
         ]
         for u in users:
-            lines.append(f"{u['name']}:$6$rounds=656000$salt${u['name']}hash:19700:0:99999:7:::")
+            name = u.get("name", "")
+            if name and name not in ("root", "daemon", "sshd"):
+                lines.append(f"{name}:$6$rounds=656000$salt${name}hash:19700:0:99999:7:::")
         return "\n".join(lines) + "\n"
 
     def _gen_group(self, users: list) -> str:
@@ -309,18 +397,28 @@ class FakeFilesystem:
         ]
         gid = 1000
         for u in users:
-            lines.append(f"{u['name']}:x:{gid}:")
-            gid += 1
+            name = u.get("name", "")
+            if name and name not in ("root", "www-data", "daemon", "sshd", "nobody"):
+                user_gid = u.get("uid", gid)  # Use UID as GID
+                lines.append(f"{name}:x:{user_gid}:")
+                if user_gid >= gid:
+                    gid = user_gid + 1
         return "\n".join(lines) + "\n"
 
     @staticmethod
-    def _gen_hosts() -> str:
+    def _gen_hosts(hostname: str = "server-01") -> str:
         return (
             "127.0.0.1\tlocalhost\n"
-            "127.0.1.1\tserver-01\n"
+            f"127.0.1.1\t{hostname}\n"
+            "10.0.0.1\tgateway\n"
+            "10.0.0.5\tdb-master\n"
+            "10.0.0.10\tcache-01\n"
+            "10.0.0.20\tfiles-01\n"
             "\n"
             "# The following lines are desirable for IPv6 capable hosts\n"
             "::1     localhost ip6-localhost ip6-loopback\n"
+            "fe00::0 ip6-localnet\n"
+            "ff00::0 ip6-mcastprefix\n"
             "ff02::1 ip6-allnodes\n"
             "ff02::2 ip6-allrouters\n"
         )
@@ -338,9 +436,15 @@ class FakeFilesystem:
         return (
             "# OpenSSH Server Configuration\n"
             "Port 22\n"
-            "PermitRootLogin yes\n"
-            "PasswordAuthentication yes\n"
+            "ListenAddress 0.0.0.0\n"
+            "Protocol 2\n"
+            "HostKey /etc/ssh/ssh_host_rsa_key\n"
+            "HostKey /etc/ssh/ssh_host_ecdsa_key\n"
+            "HostKey /etc/ssh/ssh_host_ed25519_key\n"
+            "PermitRootLogin prohibit-password\n"
+            "MaxAuthTries 6\n"
             "PubkeyAuthentication yes\n"
+            "PasswordAuthentication yes\n"
             "ChallengeResponseAuthentication no\n"
             "UsePAM yes\n"
             "X11Forwarding yes\n"
@@ -390,8 +494,14 @@ class FakeFilesystem:
             "netstat -tlnp",
             "ps aux",
             "uptime",
+            "mysql -u root -p'Str0ngP@ss2024!' -e \"SHOW DATABASES\"",
+            "ssh deploy@10.0.0.5",
+            "cat /opt/app/.env",
+            "docker ps",
+            "kubectl get pods -n production",
+            "aws s3 ls s3://company-backups/",
         ]
-        selected = random.sample(commands, min(len(commands), random.randint(5, 10)))
+        selected = random.sample(commands, min(len(commands), random.randint(8, 15)))
         return "\n".join(selected) + "\n"
 
     @staticmethod
@@ -521,7 +631,7 @@ class FakeFilesystem:
             if part not in node.children:
                 node.children[part] = FileNode(
                     name=part, is_dir=True, permissions=perms if is_leaf else "drwxr-xr-x",
-                    owner=owner, group=group, links=2,
+                    owner=owner, group=group if is_leaf else "root", links=2,
                     mtime=time.time() - random.randint(3600, 86400 * 90),
                 )
             elif is_leaf:

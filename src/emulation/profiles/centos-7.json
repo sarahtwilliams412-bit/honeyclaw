@@ -1,13 +1,27 @@
 {
+  "os": "CentOS Linux",
   "os_name": "CentOS Linux",
+  "version": "7 (Core)",
   "os_version": "7 (Core)",
+  "codename": "Core",
   "kernel": "3.10.0-1160.105.1.el7.x86_64",
   "arch": "x86_64",
-  "hostname": "prod-web-01",
+  "hostname": "db-master-01",
   "os_release": "NAME=\"CentOS Linux\"\nVERSION=\"7 (Core)\"\nID=\"centos\"\nID_LIKE=\"rhel fedora\"\nVERSION_ID=\"7\"\nPRETTY_NAME=\"CentOS Linux 7 (Core)\"\nANSI_COLOR=\"0;31\"\nCPE_NAME=\"cpe:/o:centos:centos:7\"\nHOME_URL=\"https://www.centos.org/\"\nBUG_REPORT_URL=\"https://bugs.centos.org/\"\nCENTOS_MANTISBT_PROJECT=\"CentOS-7\"\n",
+  "ssh_banner": "SSH-2.0-OpenSSH_7.4",
+  "motd": "CentOS Linux 7 (Core)\nKernel \\r on an \\m",
+  "package_manager": "yum",
+  "packages": {
+    "openssh-server": "7.4p1-22.el7_9",
+    "httpd": "2.4.6-99.el7.centos.1",
+    "mariadb-server": "5.5.68-1.el7",
+    "python": "2.7.5-93.el7_9"
+  },
+  "services": ["sshd", "httpd", "mariadb", "crond", "firewalld"],
   "users": [
     {
       "name": "admin",
+      "uid": 1000,
       "home": "/home/admin",
       "shell": "/bin/bash",
       "gecos": "System Administrator",
@@ -15,6 +29,7 @@
     },
     {
       "name": "jenkins",
+      "uid": 1001,
       "home": "/var/lib/jenkins",
       "shell": "/bin/bash",
       "gecos": "Jenkins CI"
@@ -25,6 +40,16 @@
     "getenforce", "journalctl", "timedatectl",
     "httpd", "php"
   ],
-  "ssh_banner": "SSH-2.0-OpenSSH_7.4",
-  "package_manager": "yum"
+  "network": {
+    "interface": "eth0",
+    "ip": "10.0.0.30",
+    "netmask": "255.255.255.0",
+    "gateway": "10.0.0.1",
+    "dns": ["10.0.0.1"]
+  },
+  "tcp_fingerprint": {
+    "ttl": 64,
+    "window_size": 29200,
+    "options": "mss 1460,sackOK,TS val ecr,nop,wscale 7"
+  }
 }

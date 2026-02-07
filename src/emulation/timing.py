@@ -1,14 +1,22 @@
+#!/usr/bin/env python3
 """
-Timing Simulation
+Honeyclaw Timing Simulator
 
 Adds realistic response delays to prevent timing-based fingerprinting.
-Simulates disk I/O, network latency, and CPU load delays with Gaussian
-jitter so responses don't have unnaturally uniform timing.
+
+Features:
+- Gaussian-distributed response delays
+- Command-specific delay profiles
+- Disk I/O simulation (larger files take longer)
+- Network latency simulation
+- CPU load simulation
+- Configurable jitter
+- Async support
 """
 
 import asyncio
 import random
-from typing import Optional
+from typing import Dict, Optional
 
 
 class TimingSimulator:
@@ -20,10 +28,10 @@ class TimingSimulator:
 
     def __init__(
         self,
-        base_delay_ms: float = 15.0,
-        jitter_stddev_ms: float = 8.0,
-        disk_read_per_kb_ms: float = 0.05,
-        network_latency_ms: float = 50.0,
+        base_delay_ms: float = 30.0,
+        jitter_stddev_ms: float = 15.0,
+        disk_read_per_kb_ms: float = 0.3,
+        network_latency_ms: float = 100.0,
         cpu_factor_ms: float = 5.0,
         min_delay_ms: float = 2.0,
         max_delay_ms: float = 5000.0,
@@ -35,6 +43,83 @@ class TimingSimulator:
         self.cpu_factor_ms = cpu_factor_ms
         self.min_delay_ms = min_delay_ms
         self.max_delay_ms = max_delay_ms
+
+        # Command categories and their typical execution times (ms)
+        self._command_profiles: Dict[str, tuple] = {
+            # (base_ms, stddev_ms)
+            "ls": (30, 10),
+            "cat": (20, 8),
+            "cd": (5, 2),
+            "pwd": (5, 2),
+            "whoami": (8, 3),
+            "id": (10, 4),
+            "uname": (8, 3),
+            "hostname": (5, 2),
+            "ps": (80, 30),
+            "netstat": (120, 40),
+            "ss": (60, 20),
+            "ifconfig": (40, 15),
+            "ip": (30, 10),
+            "env": (15, 5),
+            "echo": (5, 2),
+            "grep": (50, 20),
+            "find": (200, 80),
+            "which": (20, 8),
+            "uptime": (10, 4),
+            "w": (30, 10),
+            "who": (25, 8),
+            "df": (60, 20),
+            "free": (15, 5),
+            "mount": (20, 8),
+            "date": (5, 2),
+            "wget": (2000, 500),  # Network command - slow
+            "curl": (1500, 400),
+            "ssh": (3000, 800),
+            "scp": (3000, 800),
+            "sudo": (200, 50),   # Password prompt delay
+            "history": (10, 3),
+            "head": (25, 10),
+            "tail": (25, 10),
+            "wc": (30, 12),
+            "stat": (20, 8),
+            "file": (35, 15),
+            "touch": (10, 5),
+            "mkdir": (15, 6),
+            "rm": (20, 8),
+            "cp": (50, 20),
+            "mv": (40, 15),
+            "systemctl": (80, 30),
+            "service": (70, 25),
+            "apt": (500, 150),
+            "dpkg": (100, 40),
+            "pip": (200, 60),
+            "python": (50, 20),
+            "python3": (50, 20),
+        }
+
+    def command_delay(self, command: str) -> float:
+        """
+        Get a realistic delay for a command in seconds.
+
+        Args:
+            command: The command name
+
+        Returns:
+            Delay in seconds
+        """
+        cmd = command.strip().split()[0] if command.strip() else ""
+
+        if cmd in self._command_profiles:
+            base_ms, stddev_ms = self._command_profiles[cmd]
+        else:
+            base_ms = self.base_delay_ms
+            stddev_ms = self.jitter_stddev_ms
+
+        # Gaussian delay (clamp to positive)
+        delay_ms = max(self.min_delay_ms, random.gauss(base_ms, stddev_ms))
+        delay_ms = min(delay_ms, self.max_delay_ms)
+
+        return delay_ms / 1000.0
 
     def compute_delay_ms(
         self,
@@ -76,6 +161,31 @@ class TimingSimulator:
         delay = max(self.min_delay_ms, min(delay, self.max_delay_ms))
         return delay
 
+    def disk_io_delay(self, size_bytes: int) -> float:
+        """
+        Simulate disk I/O delay based on data size.
+
+        Args:
+            size_bytes: Size of data being read
+
+        Returns:
+            Delay in seconds
+        """
+        size_kb = size_bytes / 1024
+        delay_ms = size_kb * self.disk_read_per_kb_ms
+        delay_ms += random.gauss(10, 5)  # Base disk access time
+        return max(0.005, delay_ms / 1000.0)
+
+    def network_delay(self) -> float:
+        """
+        Simulate network latency.
+
+        Returns:
+            Delay in seconds
+        """
+        delay_ms = max(10, random.gauss(self.network_latency_ms, self.network_latency_ms * 0.3))
+        return delay_ms / 1000.0
+
     async def delay_for(
         self,
         command: str = "",
@@ -86,6 +196,28 @@ class TimingSimulator:
         """Async sleep for a realistic delay period."""
         ms = self.compute_delay_ms(command, output_size, is_network, is_disk_read)
         await asyncio.sleep(ms / 1000.0)
+
+    def typing_delay(self, text_length: int) -> float:
+        """
+        Simulate human typing delay for output.
+
+        Args:
+            text_length: Length of text being "typed"
+
+        Returns:
+            Delay in seconds
+        """
+        # Average 60 WPM = ~300 chars/min = 5 chars/sec
+        char_delay = random.gauss(0.02, 0.008)
+        return max(0, text_length * char_delay)
+
+    def typing_delay_ms(self, char_count: int = 1) -> float:
+        """
+        Simulate the delay of output being 'typed' to the terminal in milliseconds.
+        This is for character-by-character output scenarios.
+        """
+        base = char_count * random.uniform(0.5, 2.0)
+        return max(0.5, base + random.gauss(0, 0.5))
 
     @staticmethod
     def _is_disk_command(command: str) -> bool:
@@ -117,11 +249,3 @@ class TimingSimulator:
         }
         cmd = command.split()[0] if command.split() else ""
         return cmd in cpu_commands
-
-    def typing_delay_ms(self, char_count: int = 1) -> float:
-        """
-        Simulate the delay of output being 'typed' to the terminal.
-        This is for character-by-character output scenarios.
-        """
-        base = char_count * random.uniform(0.5, 2.0)
-        return max(0.5, base + random.gauss(0, 0.5))
