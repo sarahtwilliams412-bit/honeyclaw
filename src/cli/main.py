@@ -670,6 +670,166 @@ def cmd_deploy_terraform(args):
         print("\nTerraform cancelled.")
         sys.exit(1)
 
+# === Health Commands ===
+
+def cmd_health_status(args):
+    """Show current health status"""
+    from src.health import HealthMonitor, HealthConfig
+
+    config = HealthConfig.from_env()
+    monitor = HealthMonitor(config=config)
+    report = monitor.run_checks()
+
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2))
+        return
+
+    status_icons = {
+        'healthy': '[OK]',
+        'degraded': '[WARN]',
+        'compromised': '[CRIT]',
+        'unknown': '[??]',
+    }
+    status_name = report.status.name.lower()
+    icon = status_icons.get(status_name, '[??]')
+
+    print(f"=== Honeyclaw Health Status ===\n")
+    print(f"Status:       {icon} {status_name.upper()}")
+    print(f"Honeypot ID:  {report.honeypot_id}")
+    print(f"Uptime:       {report.uptime_seconds:.0f}s")
+    print(f"Last Check:   {report.last_check}")
+
+    if report.services:
+        print(f"\nServices:")
+        for svc in report.services:
+            svc_icon = '[OK]' if svc.status.name == 'UP' else '[DOWN]'
+            detail = ''
+            if svc.details.get('response_ms'):
+                detail = f" ({svc.details['response_ms']}ms)"
+            elif svc.message:
+                detail = f" - {svc.message}"
+            print(f"  {svc_icon} {svc.name}{detail}")
+
+    if report.resources:
+        res = report.resources
+        print(f"\nResources:")
+        print(f"  CPU:        {res.cpu_percent}%")
+        print(f"  Memory:     {res.memory_mb:.0f}MB ({res.memory_percent:.1f}%)")
+        print(f"  Disk:       {res.disk_percent}%")
+        print(f"  Open FDs:   {res.open_fds}")
+        print(f"  Processes:  {res.pid_count}")
+
+    if report.isolation:
+        iso = report.isolation
+        print(f"\nIsolation:")
+        egress_icon = '[OK]' if iso.egress_blocked else '[FAIL]'
+        cred_icon = '[OK]' if iso.no_shared_credentials else '[WARN]'
+        fs_icon = '[OK]' if iso.filesystem_integrity else '[FAIL]'
+        print(f"  {egress_icon} Egress blocked")
+        print(f"  {cred_icon} No shared credentials")
+        print(f"  {fs_icon} Filesystem integrity")
+
+    if report.compromise_indicators:
+        print(f"\nCompromise Indicators ({len(report.compromise_indicators)}):")
+        for ind in report.compromise_indicators:
+            sev = ind.severity.upper()
+            print(f"  [{sev}] {ind.description}")
+
+
+def cmd_health_check(args):
+    """Run a one-time health check (alias for status)"""
+    cmd_health_status(args)
+
+
+def cmd_health_monitor(args):
+    """Start background health monitoring"""
+    from src.health import HealthMonitor, HealthConfig, SelfHealer, SelfHealConfig
+
+    health_config = HealthConfig.from_env()
+    health_config.check_interval_sec = args.interval
+
+    heal_config = SelfHealConfig.from_env()
+    healer = SelfHealer(config=heal_config)
+
+    monitor = HealthMonitor(
+        config=health_config,
+        on_compromise=healer.handle_compromise,
+        on_degraded=healer.handle_degraded,
+    )
+
+    print(f"Starting health monitor (interval={args.interval}s)")
+    print(f"Honeypot ID: {monitor.honeypot_id}")
+    print("Press Ctrl+C to stop\n")
+
+    monitor.start()
+
+    try:
+        while True:
+            import time
+            time.sleep(1)
+            report = monitor.get_last_report()
+            if report:
+                status = report.status.name
+                indicators = len(report.compromise_indicators)
+                services_up = sum(1 for s in report.services if s.status.name == 'UP')
+                services_total = len(report.services)
+                sys.stdout.write(
+                    f"\r[{report.last_check}] "
+                    f"Status: {status} | "
+                    f"Services: {services_up}/{services_total} | "
+                    f"Indicators: {indicators}    "
+                )
+                sys.stdout.flush()
+    except KeyboardInterrupt:
+        print("\n\nStopping health monitor...")
+        monitor.stop()
+        print("Stopped.")
+
+
+def cmd_health_log(args):
+    """Show health check log"""
+    log_path = os.environ.get('HEALTH_LOG_PATH', '/var/log/honeyclaw/health.json')
+
+    if not os.path.exists(log_path):
+        print(f"No health log found at {log_path}")
+        return
+
+    entries = []
+    try:
+        with open(log_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        entries.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+    except OSError as e:
+        print(f"Error reading health log: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Get last N entries
+    entries = entries[-args.limit:]
+
+    if args.json:
+        print(json.dumps(entries, indent=2))
+        return
+
+    if not entries:
+        print("No health log entries found.")
+        return
+
+    print("=== Health Check Log ===\n")
+    for entry in reversed(entries):
+        status = entry.get('status', 'unknown').upper()
+        icon = {'healthy': '[OK]', 'degraded': '[WARN]', 'compromised': '[CRIT]'}.get(
+            entry.get('status', ''), '[??]'
+        )
+        ts = entry.get('timestamp', '?')
+        indicators = entry.get('indicators', 0)
+        hid = entry.get('honeypot_id', '?')
+        print(f"  {icon} {ts}  {status}  indicators={indicators}  honeypot={hid}")
+
 
 def cli():
     """Main CLI entry point"""
@@ -720,6 +880,35 @@ def cli():
     delete_parser.add_argument('--force', '-f', action='store_true', help='Skip confirmation')
     delete_parser.set_defaults(func=cmd_replay_delete)
     
+    # === Health command group ===
+    health_parser = subparsers.add_parser('health', help='System health commands')
+    health_subparsers = health_parser.add_subparsers(dest='subcommand', help='Health subcommands')
+
+    # health status
+    health_status_parser = health_subparsers.add_parser('status', help='Show current health status')
+    health_status_parser.add_argument('--json', '-j', action='store_true', help='Output as JSON')
+    health_status_parser.set_defaults(func=cmd_health_status)
+
+    # health check (alias for status)
+    health_check_parser = health_subparsers.add_parser('check', help='Run a health check')
+    health_check_parser.add_argument('--json', '-j', action='store_true', help='Output as JSON')
+    health_check_parser.set_defaults(func=cmd_health_check)
+
+    # health monitor
+    health_monitor_parser = health_subparsers.add_parser(
+        'monitor', help='Start background health monitoring'
+    )
+    health_monitor_parser.add_argument(
+        '--interval', '-i', type=int, default=60, help='Check interval in seconds (default: 60)'
+    )
+    health_monitor_parser.set_defaults(func=cmd_health_monitor)
+
+    # health log
+    health_log_parser = health_subparsers.add_parser('log', help='Show health check log')
+    health_log_parser.add_argument('--limit', '-l', type=int, default=20, help='Number of entries')
+    health_log_parser.add_argument('--json', '-j', action='store_true', help='Output as JSON')
+    health_log_parser.set_defaults(func=cmd_health_log)
+
     # === Report command group ===
     report_parser = subparsers.add_parser('report', help='Abuse reporting commands')
     report_subparsers = report_parser.add_subparsers(dest='subcommand', help='Report subcommands')
@@ -791,7 +980,11 @@ def cli():
     if args.command == 'replay' and not args.subcommand:
         replay_parser.print_help()
         sys.exit(0)
-    
+
+    if args.command == 'health' and not args.subcommand:
+        health_parser.print_help()
+        sys.exit(0)
+
     if args.command == 'report' and not args.subcommand:
         report_parser.print_help()
         sys.exit(0)

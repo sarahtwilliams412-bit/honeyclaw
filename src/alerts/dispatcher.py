@@ -2,13 +2,15 @@
 """
 Honeyclaw Alert Dispatcher
 
-Sends alerts to webhooks (Slack, Discord, PagerDuty, generic).
+Sends alerts to webhooks (Slack, Discord, PagerDuty, generic)
+and SOAR platforms (TheHive/Cortex, Splunk SOAR, XSOAR, generic).
 Supports multiple targets, retry logic, and rate limiting.
 """
 
 import os
 import json
 import time
+import logging
 import threading
 import hashlib
 from datetime import datetime
@@ -20,6 +22,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 
 from .rules import AlertEngine, Severity
+
+logger = logging.getLogger('honeyclaw.alerts.dispatcher')
 
 
 class WebhookType(Enum):
@@ -275,31 +279,34 @@ def format_generic(alert: Dict[str, Any], honeypot_id: str) -> Dict[str, Any]:
 
 class AlertDispatcher:
     """
-    Dispatches alerts to configured webhooks.
-    
+    Dispatches alerts to configured webhooks and SOAR platforms.
+
     Features:
-    - Multiple webhook targets
+    - Multiple webhook targets (Slack, Discord, PagerDuty, generic)
+    - SOAR platform integration (TheHive/Cortex, Splunk SOAR, XSOAR, generic)
     - Async/background sending
     - Retry logic with exponential backoff
     - Rate limiting per webhook
     """
-    
+
     def __init__(
         self,
         webhooks: Optional[List[WebhookConfig]] = None,
         honeypot_id: Optional[str] = None,
         engine: Optional[AlertEngine] = None,
+        soar_connectors: Optional[List[Any]] = None,
         async_send: bool = True,
         max_retries: int = 3,
         retry_delay: float = 1.0,
     ):
         """
         Initialize the dispatcher.
-        
+
         Args:
             webhooks: List of webhook configurations
             honeypot_id: Identifier for this honeypot instance
             engine: Alert engine (creates default if not provided)
+            soar_connectors: List of SOARConnector instances for SOAR dispatch
             async_send: Whether to send alerts asynchronously
             max_retries: Maximum retry attempts per webhook
             retry_delay: Initial retry delay (doubles each retry)
@@ -307,18 +314,25 @@ class AlertDispatcher:
         self.webhooks: List[WebhookConfig] = webhooks or []
         self.honeypot_id = honeypot_id or os.environ.get('HONEYPOT_ID', 'honeyclaw')
         self.engine = engine or AlertEngine()
+        self.soar_connectors: List[Any] = soar_connectors or []
         self.async_send = async_send
         self.max_retries = max_retries
         self.retry_delay = retry_delay
-        
+
         # Load webhook from environment if none configured
         if not self.webhooks:
             self._load_env_webhooks()
-        
+
+        # Load SOAR connectors from environment if none configured
+        if not self.soar_connectors:
+            self._load_env_soar()
+
         # Stats
         self._stats = {
             'alerts_sent': 0,
             'alerts_failed': 0,
+            'soar_alerts_sent': 0,
+            'soar_alerts_failed': 0,
             'events_processed': 0,
         }
         self._lock = threading.Lock()
@@ -346,7 +360,80 @@ class AlertDispatcher:
                 routing_key=pd_key,
                 min_severity=Severity.HIGH,  # Only high+ to PD by default
             ))
-    
+
+    def _load_env_soar(self):
+        """Load SOAR connector config from environment variables."""
+        soar_provider = os.environ.get('SOAR_PROVIDER')
+        soar_endpoint = os.environ.get('SOAR_ENDPOINT')
+
+        if not soar_provider or not soar_endpoint:
+            return
+
+        try:
+            from ..integrations.soar import get_soar_connector
+            config = {
+                'provider': soar_provider,
+                'endpoint': soar_endpoint,
+                'api_key': os.environ.get('SOAR_API_KEY', ''),
+                'token': os.environ.get('SOAR_TOKEN', ''),
+            }
+            connector = get_soar_connector(config)
+            self.soar_connectors.append(connector)
+            logger.info(f"SOAR connector loaded from env: {soar_provider}")
+        except Exception as e:
+            logger.warning(f"Failed to load SOAR connector from env: {e}")
+
+    def add_soar_connector(self, connector):
+        """
+        Add a SOAR connector for automated incident response.
+
+        Args:
+            connector: A SOARConnector instance
+        """
+        self.soar_connectors.append(connector)
+
+    def _dispatch_to_soar(self, alert: Dict[str, Any]):
+        """Dispatch alert to all configured SOAR connectors."""
+        if not self.soar_connectors:
+            return
+
+        try:
+            from ..integrations.soar.base import SOARAlert
+            soar_alert = SOARAlert.from_alert_dict(alert)
+            soar_alert.honeypot_id = self.honeypot_id
+        except Exception as e:
+            logger.error(f"Failed to convert alert to SOAR format: {e}")
+            return
+
+        for connector in self.soar_connectors:
+            if self.async_send:
+                thread = threading.Thread(
+                    target=self._send_to_soar_connector,
+                    args=(connector, soar_alert),
+                    daemon=True,
+                )
+                thread.start()
+            else:
+                self._send_to_soar_connector(connector, soar_alert)
+
+    def _send_to_soar_connector(self, connector, soar_alert):
+        """Send alert to a single SOAR connector."""
+        try:
+            result = connector.process_alert(soar_alert)
+            if result:
+                with self._lock:
+                    self._stats['soar_alerts_sent'] += 1
+                logger.info(
+                    f"Alert dispatched to SOAR ({connector.provider_name}): {result}"
+                )
+            else:
+                with self._lock:
+                    self._stats['soar_alerts_failed'] += 1
+        except Exception as e:
+            logger.error(f"SOAR dispatch failed ({connector.provider_name}): {e}")
+            with self._lock:
+                self._stats['soar_alerts_failed'] += 1
+
     def process_event(self, event: Dict[str, Any], event_type: str):
         """
         Process an event through the alert engine and dispatch any alerts.
@@ -367,20 +454,21 @@ class AlertDispatcher:
     
     def dispatch(self, alert: Dict[str, Any]):
         """
-        Dispatch an alert to all configured webhooks.
-        
+        Dispatch an alert to all configured webhooks and SOAR platforms.
+
         Args:
             alert: The alert dict from AlertEngine
         """
         alert_severity = Severity[alert.get('severity', 'INFO')]
-        
+
+        # Dispatch to webhooks
         for webhook in self.webhooks:
             if not webhook.enabled:
                 continue
-            
+
             if alert_severity < webhook.min_severity:
                 continue
-            
+
             if self.async_send:
                 thread = threading.Thread(
                     target=self._send_to_webhook,
@@ -390,6 +478,9 @@ class AlertDispatcher:
                 thread.start()
             else:
                 self._send_to_webhook(webhook, alert)
+
+        # Dispatch to SOAR platforms
+        self._dispatch_to_soar(alert)
     
     def _send_to_webhook(self, webhook: WebhookConfig, alert: Dict[str, Any]):
         """Send alert to a single webhook with retries."""
@@ -481,30 +572,33 @@ def configure(
     webhooks: Optional[List[WebhookConfig]] = None,
     honeypot_id: Optional[str] = None,
     min_severity: Optional[str] = None,
+    soar_connectors: Optional[List[Any]] = None,
 ):
     """
     Configure the default dispatcher.
-    
+
     Args:
         webhook_url: Primary webhook URL
         webhooks: List of WebhookConfig objects
         honeypot_id: Honeypot identifier
         min_severity: Minimum severity threshold (DEBUG/INFO/LOW/MEDIUM/HIGH/CRITICAL)
+        soar_connectors: List of SOARConnector instances for SOAR dispatch
     """
     global _default_dispatcher
-    
+
     wh_list = webhooks or []
     if webhook_url:
         wh_list.insert(0, WebhookConfig(url=webhook_url))
-    
+
     engine = AlertEngine()
     if min_severity:
         engine.min_severity = Severity[min_severity.upper()]
-    
+
     _default_dispatcher = AlertDispatcher(
         webhooks=wh_list,
         honeypot_id=honeypot_id,
         engine=engine,
+        soar_connectors=soar_connectors,
     )
 
 
