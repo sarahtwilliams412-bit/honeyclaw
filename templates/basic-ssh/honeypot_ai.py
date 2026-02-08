@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 AI-Enhanced SSH Honeypot - Interactive shell with LLM deception
-Version: 2.1.0
+Version: 2.2.0 (ed25519 keys + health endpoint + key persistence)
 
 This honeypot accepts configured credentials and provides an interactive
 shell session powered by AI to engage attackers and extract intelligence.
@@ -10,7 +10,9 @@ provides realistic responses to increase attacker dwell time.
 
 Environment variables:
   PORT                       - Listen port (default: 8022)
+  HEALTH_PORT                - Health check HTTP port (default: 9090)
   LOG_PATH                   - Log file path (default: /var/log/honeypot/ssh.json)
+  HOST_KEY_PATH              - Persistent host key path (default: None, generates ephemeral)
   SSH_BANNER                 - SSH version banner (default: OpenSSH_8.9p1 Ubuntu-3ubuntu0.6)
 
 AI Deception:
@@ -45,7 +47,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 from collections import defaultdict
-from typing import Dict, Set, Optional, Tuple
+from typing import Dict, List, Set, Optional, Tuple
 
 # Add paths for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -96,22 +98,33 @@ def get_port():
         return 8022
 
 
-def load_allowed_credentials() -> Dict[str, str]:
-    """Load allowed username:password combinations"""
-    creds = {}
-    
+def load_allowed_credentials() -> Dict[str, List[str]]:
+    """Load allowed username:password combinations.
+
+    Returns a dict mapping usernames to lists of accepted passwords,
+    allowing multiple passwords per user (e.g. root can accept both
+    "root" and "admin").  The special key "*" means accept any creds.
+    """
+    creds: Dict[str, List[str]] = {}
+
     # Check for allow-any mode
     if os.environ.get("HONEYPOT_ALLOW_ANY_AUTH", "false").lower() == "true":
-        return {"*": "*"}  # Special marker for any-auth
-    
+        return {"*": ["*"]}  # Special marker for any-auth
+
+    def _add(user: str, passwd: str):
+        user, passwd = user.strip(), passwd.strip()
+        creds.setdefault(user, [])
+        if passwd not in creds[user]:
+            creds[user].append(passwd)
+
     # Load from environment variable
     users_env = os.environ.get("HONEYPOT_USERS", "")
     if users_env:
         for pair in users_env.split(","):
             if ":" in pair:
                 user, passwd = pair.split(":", 1)
-                creds[user.strip()] = passwd.strip()
-    
+                _add(user, passwd)
+
     # Load from file
     users_file = os.environ.get("HONEYPOT_USERS_FILE", "")
     if users_file and Path(users_file).exists():
@@ -121,30 +134,33 @@ def load_allowed_credentials() -> Dict[str, str]:
                     line = line.strip()
                     if line and ":" in line and not line.startswith("#"):
                         user, passwd = line.split(":", 1)
-                        creds[user.strip()] = passwd.strip()
+                        _add(user, passwd)
         except Exception as e:
             print(f"[ERROR] Failed to load credentials file: {e}", flush=True)
-    
+
     # Default weak credentials if nothing configured
     if not creds:
-        creds = {
-            "root": "admin",
-            "root": "root",
-            "admin": "admin",
-            "test": "test",
-            "user": "password",
-        }
-    
+        _add("root", "root")
+        _add("root", "admin")
+        _add("admin", "admin")
+        _add("test", "test")
+        _add("user", "password")
+
     return creds
 
 
 PORT = get_port()
+HEALTH_PORT = int(os.environ.get("HEALTH_PORT", 9090))
 LOG_FILE = Path(os.environ.get("LOG_PATH", "/var/log/honeypot/ssh.json"))
+HOST_KEY_PATH = os.environ.get("HOST_KEY_PATH", "")
 SSH_BANNER = os.environ.get("SSH_BANNER", "OpenSSH_8.9p1 Ubuntu-3ubuntu0.6")
 ALLOWED_CREDS = load_allowed_credentials()
 AI_ENABLED = os.environ.get("AI_DECEPTION_ENABLED", "false").lower() == "true"
 AI_PERSONALITY = os.environ.get("AI_DECEPTION_PERSONALITY", "naive_intern")
 EMULATION_PROFILE = os.environ.get("EMULATION_PROFILE", "ubuntu-22.04")
+
+# Track server health state
+_server_healthy = False
 
 
 # =============================================================================
@@ -230,6 +246,69 @@ signal.signal(signal.SIGINT, handle_shutdown)
 
 
 # =============================================================================
+# Host Key & Health
+# =============================================================================
+
+def load_or_generate_host_key():
+    """Load host key from persistent storage or generate a new one.
+
+    If HOST_KEY_PATH is set and the file exists, loads the key from disk.
+    Otherwise generates a new ed25519 key (preferred by modern OpenSSH)
+    and saves it to HOST_KEY_PATH if configured.
+    """
+    key_path = Path(HOST_KEY_PATH) if HOST_KEY_PATH else None
+
+    # Try to load existing key from persistent storage
+    if key_path and key_path.exists():
+        try:
+            key = asyncssh.read_private_key(str(key_path))
+            print(f"[INFO] Loaded persistent host key from {key_path}", flush=True)
+            return key
+        except Exception as e:
+            print(f"[WARN] Failed to load host key from {key_path}: {e}", flush=True)
+
+    # Generate new ed25519 key (matches modern OpenSSH defaults)
+    print("[DEBUG] Generating ed25519 host key...", flush=True)
+    key = asyncssh.generate_private_key('ssh-ed25519')
+
+    # Persist to volume if path is configured
+    if key_path:
+        try:
+            key_path.parent.mkdir(parents=True, exist_ok=True)
+            key.write_private_key(str(key_path))
+            os.chmod(str(key_path), 0o600)
+            print(f"[INFO] Saved host key to {key_path}", flush=True)
+        except Exception as e:
+            print(f"[WARN] Could not persist host key to {key_path}: {e}", flush=True)
+
+    return key
+
+
+async def start_health_server():
+    """Start a minimal HTTP health check server on HEALTH_PORT.
+
+    Returns 200 OK at /health when the SSH server is running.
+    """
+    from aiohttp import web
+
+    async def health_handler(request):
+        if _server_healthy:
+            return web.json_response({"status": "healthy", "port": PORT, "version": "2.2.0",
+                                      "ai_enabled": AI_ENABLED and AI_AVAILABLE})
+        return web.json_response({"status": "starting"}, status=503)
+
+    app = web.Application()
+    app.router.add_get("/health", health_handler)
+
+    runner = web.AppRunner(app, access_log=None)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", HEALTH_PORT)
+    await site.start()
+    print(f"[INFO] Health endpoint listening on :{HEALTH_PORT}/health", flush=True)
+    return runner
+
+
+# =============================================================================
 # Logging
 # =============================================================================
 
@@ -268,18 +347,25 @@ def log_event(event_type: str, data: dict):
 # SSH Server
 # =============================================================================
 
+# Registry mapping asyncssh connections to their HoneypotServer instances.
+# Used by process_factory to retrieve the server without reaching into
+# private asyncssh internals.
+_conn_to_server: Dict[int, 'HoneypotServer'] = {}
+
+
 class HoneypotServer(asyncssh.SSHServer):
     """SSH server that captures credentials and optionally allows shell access"""
-    
+
     def __init__(self):
         self.client_ip = None
         self.client_ip_valid = False
         self._rate_limited = False
         self._authenticated_user = None
         self._conn = None
-        
+
     def connection_made(self, conn):
         self._conn = conn
+        _conn_to_server[id(conn)] = self
         try:
             peername = conn.get_extra_info('peername')
             raw_ip = peername[0] if peername else 'unknown'
@@ -304,9 +390,11 @@ class HoneypotServer(asyncssh.SSHServer):
             traceback.print_exc()
 
     def connection_lost(self, exc):
+        if self._conn is not None:
+            _conn_to_server.pop(id(self._conn), None)
         error_msg = sanitize_for_log(str(exc), max_length=256) if exc else None
         log_event('disconnect', {
-            'ip': self.client_ip, 
+            'ip': self.client_ip,
             'error': error_msg,
             'authenticated_user': self._authenticated_user
         })
@@ -334,7 +422,7 @@ class HoneypotServer(asyncssh.SSHServer):
             # Allow any credentials
             auth_success = True
         elif safe_username in ALLOWED_CREDS:
-            auth_success = (ALLOWED_CREDS[safe_username] == password)
+            auth_success = password in ALLOWED_CREDS[safe_username]
         
         log_event('login_attempt', {
             'ip': self.client_ip,
@@ -573,8 +661,18 @@ Last login: {datetime.now().strftime('%a %b %d %H:%M:%S %Y')} from 10.0.0.1
 
 def process_factory(process):
     """Factory function for creating SSH process handlers"""
-    # Get the server instance from the connection
-    server = process.channel._conn._owner
+    # Look up server instance via the connection registry instead of
+    # reaching into private asyncssh internals (_conn._owner).
+    conn = process.get_extra_info('connection')
+    server = _conn_to_server.get(id(conn)) if conn is not None else None
+    if server is None:
+        # Fallback: try the private attribute path (older asyncssh versions)
+        try:
+            server = process.channel._conn._owner
+        except AttributeError:
+            print("[ERROR] Cannot resolve HoneypotServer for process", flush=True)
+            process.exit(1)
+            return asyncio.sleep(0)
     handler = HoneypotProcess(process, server)
     return handler.run()
 
@@ -585,48 +683,66 @@ def process_factory(process):
 
 async def start_server():
     """Start the SSH honeypot server"""
+    global _server_healthy
+    health_runner = None
     try:
-        print("[DEBUG] Generating RSA host key...", flush=True)
-        key = asyncssh.generate_private_key('ssh-rsa', 2048)
-        
-        cred_mode = "any" if "*" in ALLOWED_CREDS else f"{len(ALLOWED_CREDS)} configured"
-        
+        # Start health endpoint first so Fly.io doesn't restart us
+        try:
+            health_runner = await start_health_server()
+        except Exception as e:
+            print(f"[WARN] Health server failed to start: {e}", flush=True)
+
+        # Load or generate host key (persists across restarts if volume mounted)
+        key = load_or_generate_host_key()
+
+        cred_mode = "any" if "*" in ALLOWED_CREDS else f"{len(ALLOWED_CREDS)} users configured"
+
         log_event('startup', {
             'port': PORT,
-            'version': '2.1.0',
+            'health_port': HEALTH_PORT,
+            'version': '2.2.0',
             'rate_limiting': rate_limiter.enabled,
             'ai_enabled': AI_ENABLED and AI_AVAILABLE,
             'ai_personality': AI_PERSONALITY if AI_ENABLED else None,
             'emulation_available': EMULATION_AVAILABLE,
             'emulation_profile': EMULATION_PROFILE if EMULATION_AVAILABLE else None,
             'credentials_mode': cred_mode,
-            'ssh_banner': SSH_BANNER
+            'ssh_banner': SSH_BANNER,
+            'host_key_persistent': bool(HOST_KEY_PATH),
         })
-        
+
         print(f"[INFO] SSH AI Honeypot starting on port {PORT}", flush=True)
         print(f"[INFO] AI Deception: {'ENABLED (' + AI_PERSONALITY + ')' if AI_ENABLED and AI_AVAILABLE else 'DISABLED'}", flush=True)
         print(f"[INFO] Shell Emulation: {'ENABLED (' + EMULATION_PROFILE + ')' if EMULATION_AVAILABLE else 'DISABLED (static fallback)'}", flush=True)
         print(f"[INFO] Credentials: {cred_mode}", flush=True)
-        
+
         server = await asyncssh.create_server(
             HoneypotServer, '0.0.0.0', PORT,
             server_host_keys=[key],
             server_version=SSH_BANNER,
             process_factory=process_factory
         )
-        
+
         print(f"[INFO] SSH Honeypot running on port {PORT}", flush=True)
-        
+
+        # Mark healthy now that SSH server is accepting connections
+        _server_healthy = True
+
         await shutdown_event.wait()
         print("[INFO] Shutting down gracefully...", flush=True)
+        _server_healthy = False
         rate_limiter.shutdown()
         server.close()
         await server.wait_closed()
+        if health_runner:
+            await health_runner.cleanup()
         log_event('shutdown', {'reason': 'signal'})
-        
+
     except Exception as e:
         print(f"[FATAL] Server error: {e}", flush=True)
         traceback.print_exc()
+        if health_runner:
+            await health_runner.cleanup()
         raise
 
 
