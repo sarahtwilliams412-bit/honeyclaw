@@ -377,23 +377,23 @@ class MeshNode:
                                     multi_region_only: bool = True) -> List[dict]:
         """
         Fetch known attacker profiles from coordinator.
-        
+
         Args:
             min_score: Minimum threat score
             multi_region_only: Only return multi-region attackers
-            
+
         Returns:
             List of attacker profiles
         """
         if not self.config.enabled:
             return []
-        
+
         url = f"{self.config.coordinator_url}/attackers"
         params = {
             'min_score': str(min_score),
             'multi_region': str(multi_region_only).lower()
         }
-        
+
         try:
             async with self._session.get(url, params=params, headers=self._headers) as resp:
                 if resp.status == 200:
@@ -405,6 +405,215 @@ class MeshNode:
         except Exception as e:
             print(f"[MESH] Attacker fetch error: {e}", flush=True)
             return []
+
+    # =========================================================================
+    # Incentive System — BitTorrent-style contribute-to-query
+    # =========================================================================
+
+    async def incentive_register(self) -> Optional[dict]:
+        """
+        Register this node in the incentive system.
+        Called automatically during start() if mesh is enabled.
+
+        Returns:
+            Node standing dict with bootstrap credits, or None on failure
+        """
+        if not self.config.enabled:
+            return None
+
+        url = f"{self.config.coordinator_url}/incentive/register"
+        payload = {'node_id': self.config.node_id}
+
+        try:
+            async with self._session.post(url, json=payload, headers=self._headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    print(f"[INCENTIVE] Registered — credits: {data.get('credits', 0)}",
+                          flush=True)
+                    return data
+                else:
+                    error = await resp.text()
+                    print(f"[INCENTIVE] Registration failed: {error}", flush=True)
+        except Exception as e:
+            print(f"[INCENTIVE] Registration error: {e}", flush=True)
+        return None
+
+    async def contribute_events(self, events: List[dict]) -> Optional[dict]:
+        """
+        Contribute attack events to the mesh. Earns credits.
+
+        Args:
+            events: List of event dicts to contribute
+
+        Returns:
+            Dict with credits_earned and shard_id, or None on failure
+        """
+        if not self.config.enabled or not events:
+            return None
+
+        url = f"{self.config.coordinator_url}/incentive/contribute/events"
+        payload = {
+            'node_id': self.config.node_id,
+            'events': events,
+        }
+
+        try:
+            async with self._session.post(url, json=payload, headers=self._headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    print(f"[INCENTIVE] Contributed {len(events)} events "
+                          f"(+{data.get('credits_earned', 0)} credits)", flush=True)
+                    return data
+                else:
+                    error = await resp.text()
+                    print(f"[INCENTIVE] Event contribution failed: {error}", flush=True)
+        except Exception as e:
+            print(f"[INCENTIVE] Event contribution error: {e}", flush=True)
+        return None
+
+    async def contribute_iocs(self, iocs: List[dict]) -> Optional[dict]:
+        """
+        Contribute IOCs to the mesh. Earns more credits than events.
+
+        Args:
+            iocs: List of IOC dicts to contribute
+
+        Returns:
+            Dict with credits_earned and shard_id, or None on failure
+        """
+        if not self.config.enabled or not iocs:
+            return None
+
+        url = f"{self.config.coordinator_url}/incentive/contribute/iocs"
+        payload = {
+            'node_id': self.config.node_id,
+            'iocs': iocs,
+        }
+
+        try:
+            async with self._session.post(url, json=payload, headers=self._headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    print(f"[INCENTIVE] Contributed {len(iocs)} IOCs "
+                          f"(+{data.get('credits_earned', 0)} credits)", flush=True)
+                    return data
+                else:
+                    error = await resp.text()
+                    print(f"[INCENTIVE] IOC contribution failed: {error}", flush=True)
+        except Exception as e:
+            print(f"[INCENTIVE] IOC contribution error: {e}", flush=True)
+        return None
+
+    async def query_threat_intel(self, query_type: str,
+                                  filters: dict = None) -> Optional[dict]:
+        """
+        Query the collective mesh threat intel. Costs credits.
+
+        This is the core incentive: you can only access the network's
+        collective intelligence if you are contributing to it.
+
+        Args:
+            query_type: Type of data (events, iocs, attackers)
+            filters: Optional filters (ip, ioc_type, min_confidence, etc.)
+
+        Returns:
+            QueryResult dict with data, or error if not authorized
+        """
+        if not self.config.enabled:
+            return None
+
+        url = f"{self.config.coordinator_url}/incentive/query"
+        payload = {
+            'node_id': self.config.node_id,
+            'query_type': query_type,
+            'filters': filters or {},
+        }
+
+        try:
+            async with self._session.post(url, json=payload, headers=self._headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get('success'):
+                        print(f"[INCENTIVE] Query OK — {len(data.get('data', []))} results "
+                              f"(credits remaining: {data.get('credits_remaining')})",
+                              flush=True)
+                    else:
+                        print(f"[INCENTIVE] Query DENIED: {data.get('error')}", flush=True)
+                    return data
+                else:
+                    error = await resp.text()
+                    print(f"[INCENTIVE] Query failed: {error}", flush=True)
+        except Exception as e:
+            print(f"[INCENTIVE] Query error: {e}", flush=True)
+        return None
+
+    async def get_standing(self) -> Optional[dict]:
+        """Get this node's current standing in the incentive system."""
+        if not self.config.enabled:
+            return None
+
+        url = f"{self.config.coordinator_url}/incentive/standing/{self.config.node_id}"
+
+        try:
+            async with self._session.get(url, headers=self._headers) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                else:
+                    print(f"[INCENTIVE] Standing fetch failed: {resp.status}", flush=True)
+        except Exception as e:
+            print(f"[INCENTIVE] Standing fetch error: {e}", flush=True)
+        return None
+
+    async def volunteer_host_shard(self, shard_id: str) -> Optional[dict]:
+        """
+        Volunteer to host a data shard. Earns credits over time.
+
+        Args:
+            shard_id: ID of the shard to host
+
+        Returns:
+            Assignment result dict
+        """
+        if not self.config.enabled:
+            return None
+
+        url = f"{self.config.coordinator_url}/incentive/host-shard"
+        payload = {
+            'node_id': self.config.node_id,
+            'shard_id': shard_id,
+        }
+
+        try:
+            async with self._session.post(url, json=payload, headers=self._headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    print(f"[INCENTIVE] Shard hosting: {data.get('status')}", flush=True)
+                    return data
+                else:
+                    error = await resp.text()
+                    print(f"[INCENTIVE] Shard hosting failed: {error}", flush=True)
+        except Exception as e:
+            print(f"[INCENTIVE] Shard hosting error: {e}", flush=True)
+        return None
+
+    async def get_available_shards(self) -> List[dict]:
+        """Get shards that need more hosts — opportunity to earn credits."""
+        if not self.config.enabled:
+            return []
+
+        url = f"{self.config.coordinator_url}/incentive/available-shards/{self.config.node_id}"
+
+        try:
+            async with self._session.get(url, headers=self._headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get('shards', [])
+                else:
+                    print(f"[INCENTIVE] Available shards fetch failed: {resp.status}",
+                          flush=True)
+        except Exception as e:
+            print(f"[INCENTIVE] Available shards fetch error: {e}", flush=True)
+        return []
 
 
 # =============================================================================
@@ -509,6 +718,42 @@ class MeshIntegration:
             if attacker.get('ip') == ip:
                 return attacker
         return None
+
+    # =========================================================================
+    # Incentive System — contribute-to-query mesh intel
+    # =========================================================================
+
+    async def incentive_register(self) -> Optional[dict]:
+        """Register this node in the incentive system."""
+        return await self.node.incentive_register()
+
+    async def contribute_events_to_mesh(self, events: List[dict]) -> Optional[dict]:
+        """Contribute events and earn credits."""
+        return await self.node.contribute_events(events)
+
+    async def contribute_iocs_to_mesh(self, iocs: List[dict]) -> Optional[dict]:
+        """Contribute IOCs and earn credits."""
+        return await self.node.contribute_iocs(iocs)
+
+    async def query_mesh_intel(self, query_type: str,
+                                filters: dict = None) -> Optional[dict]:
+        """
+        Query the collective mesh threat intel (costs credits).
+        You must be contributing data and hosting shards to query.
+        """
+        return await self.node.query_threat_intel(query_type, filters)
+
+    async def get_incentive_standing(self) -> Optional[dict]:
+        """Get this node's incentive standing (credits, ratio, shards)."""
+        return await self.node.get_standing()
+
+    async def volunteer_host_shard(self, shard_id: str) -> Optional[dict]:
+        """Host a data shard to earn credits."""
+        return await self.node.volunteer_host_shard(shard_id)
+
+    async def get_available_shards(self) -> List[dict]:
+        """Get shards needing hosts — opportunities to earn credits."""
+        return await self.node.get_available_shards()
 
 
 # =============================================================================

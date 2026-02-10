@@ -29,6 +29,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 from aiohttp import web
 
+from .incentive import ThreatIntelFeed, IncentiveConfig
+
 
 # =============================================================================
 # Data Models
@@ -427,7 +429,14 @@ class MeshCoordinator:
         self.port = port
         self.token = token or os.environ.get('COORDINATOR_TOKEN', 'changeme')
         self.coordinator_id = os.environ.get('COORDINATOR_ID', str(uuid.uuid4())[:8])
-        self.db = IOCDatabase(db_path or os.environ.get('DATABASE_URL', '/data/mesh/ioc.db'))
+        db = db_path or os.environ.get('DATABASE_URL', '/data/mesh/ioc.db')
+        self.db = IOCDatabase(db)
+        # Incentive system — BitTorrent-style contribute-to-query mechanism
+        incentive_db = db.replace('.db', '_incentive.db') if db.endswith('.db') else db + '_incentive'
+        self.intel_feed = ThreatIntelFeed(
+            db_path=incentive_db,
+            config=IncentiveConfig.from_env(),
+        )
         self.app = web.Application(middlewares=[self._auth_middleware])
         self._setup_routes()
     
@@ -465,6 +474,17 @@ class MeshCoordinator:
         # Correlation & alerts
         self.app.router.add_get('/attackers', self._handle_list_attackers)
         self.app.router.add_get('/alerts', self._handle_list_alerts)
+
+        # Incentive system — contribute-to-query mesh intel
+        self.app.router.add_post('/incentive/register', self._handle_incentive_register)
+        self.app.router.add_get('/incentive/standing/{node_id}', self._handle_incentive_standing)
+        self.app.router.add_post('/incentive/contribute/events', self._handle_contribute_events)
+        self.app.router.add_post('/incentive/contribute/iocs', self._handle_contribute_iocs)
+        self.app.router.add_post('/incentive/query', self._handle_incentive_query)
+        self.app.router.add_post('/incentive/host-shard', self._handle_host_shard)
+        self.app.router.add_get('/incentive/available-shards/{node_id}', self._handle_available_shards)
+        self.app.router.add_get('/incentive/leaderboard', self._handle_leaderboard)
+        self.app.router.add_get('/incentive/network-stats', self._handle_network_stats)
     
     async def _handle_root(self, request):
         """Root endpoint"""
@@ -621,7 +641,140 @@ class MeshCoordinator:
         unacked = request.query.get('unacknowledged', 'true').lower() == 'true'
         alerts = self.db.get_alerts(unacked)
         return web.json_response({'alerts': alerts})
-    
+
+    # =========================================================================
+    # Incentive System Handlers — BitTorrent-style contribute-to-query
+    # =========================================================================
+
+    async def _handle_incentive_register(self, request):
+        """Register a node in the incentive system with bootstrap credits."""
+        try:
+            data = await request.json()
+            node_id = data['node_id']
+            result = self.intel_feed.register(node_id)
+            print(f"[INCENTIVE] Node registered: {node_id} "
+                  f"(credits: {result['credits']})", flush=True)
+            return web.json_response(result)
+        except Exception as e:
+            return web.json_response({'error': str(e)}, status=400)
+
+    async def _handle_incentive_standing(self, request):
+        """Get a node's current standing (credits, ratio, hosted shards)."""
+        node_id = request.match_info['node_id']
+        standing = self.intel_feed.get_standing(node_id)
+        if standing:
+            return web.json_response(standing)
+        return web.json_response({'error': 'Node not found'}, status=404)
+
+    async def _handle_contribute_events(self, request):
+        """Contribute attack events to the mesh — earns credits."""
+        try:
+            data = await request.json()
+            node_id = data['node_id']
+            events = data['events']
+            result = self.intel_feed.contribute_events(node_id, events)
+            print(f"[INCENTIVE] {node_id} contributed {len(events)} events "
+                  f"(+{result['credits_earned']} credits)", flush=True)
+
+            # Also record events in the main IOC database for correlation
+            for event in events:
+                self.db.record_event(node_id, event.get('region', 'unknown'), event)
+
+            return web.json_response(result)
+        except Exception as e:
+            return web.json_response({'error': str(e)}, status=400)
+
+    async def _handle_contribute_iocs(self, request):
+        """Contribute IOCs to the mesh — earns more credits than events."""
+        try:
+            data = await request.json()
+            node_id = data['node_id']
+            iocs = data['iocs']
+            result = self.intel_feed.contribute_iocs(node_id, iocs)
+            print(f"[INCENTIVE] {node_id} contributed {len(iocs)} IOCs "
+                  f"(+{result['credits_earned']} credits)", flush=True)
+
+            # Also add IOCs to the main IOC database
+            for ioc_data in iocs:
+                ioc = IOC(
+                    ioc_id=str(uuid.uuid4()),
+                    ioc_type=ioc_data.get('ioc_type', ioc_data.get('type', 'ip')),
+                    value=ioc_data.get('value', ''),
+                    source_region=ioc_data.get('region'),
+                    source_node=node_id,
+                    first_seen=datetime.utcnow().isoformat() + 'Z',
+                    last_seen=datetime.utcnow().isoformat() + 'Z',
+                    confidence=ioc_data.get('confidence', 0.5),
+                    tags=ioc_data.get('tags', []),
+                )
+                self.db.add_ioc(ioc)
+
+            return web.json_response(result)
+        except Exception as e:
+            return web.json_response({'error': str(e)}, status=400)
+
+    async def _handle_incentive_query(self, request):
+        """
+        Query the collective threat intel. Costs credits.
+
+        Only succeeds if the node has:
+        1. Sufficient credits (earned by contributing)
+        2. Contribution ratio above minimum
+        3. At least one hosted shard
+        """
+        try:
+            data = await request.json()
+            node_id = data['node_id']
+            query_type = data['query_type']  # events, iocs, attackers
+            filters = data.get('filters', {})
+
+            result = self.intel_feed.query_threat_intel(node_id, query_type, filters)
+
+            if result.get('success'):
+                print(f"[INCENTIVE] {node_id} queried {query_type} "
+                      f"({len(result.get('data', []))} results, "
+                      f"-{result['credits_spent']} credits)", flush=True)
+            else:
+                print(f"[INCENTIVE] {node_id} query DENIED: "
+                      f"{result.get('error')}", flush=True)
+
+            return web.json_response(result)
+        except Exception as e:
+            return web.json_response({'error': str(e)}, status=400)
+
+    async def _handle_host_shard(self, request):
+        """Volunteer to host a data shard — earns credits over time."""
+        try:
+            data = await request.json()
+            node_id = data['node_id']
+            shard_id = data['shard_id']
+            result = self.intel_feed.host_shard(node_id, shard_id)
+            print(f"[INCENTIVE] {node_id} hosting shard {shard_id}: "
+                  f"{result['status']}", flush=True)
+            return web.json_response(result)
+        except Exception as e:
+            return web.json_response({'error': str(e)}, status=400)
+
+    async def _handle_available_shards(self, request):
+        """Get shards that need more hosts (for nodes looking to earn credits)."""
+        node_id = request.match_info['node_id']
+        shards = self.intel_feed.get_available_shards(node_id)
+        return web.json_response({'shards': shards})
+
+    async def _handle_leaderboard(self, request):
+        """Get the mesh contribution leaderboard."""
+        leaderboard = self.intel_feed.get_leaderboard()
+        return web.json_response({'leaderboard': leaderboard})
+
+    async def _handle_network_stats(self, request):
+        """Get combined mesh and incentive network statistics."""
+        mesh_stats = self.db.get_stats()
+        incentive_stats = self.intel_feed.get_network_stats()
+        return web.json_response({
+            'mesh': mesh_stats,
+            **incentive_stats,
+        })
+
     async def start(self):
         """Start the coordinator server"""
         print(f"[MESH] Starting coordinator {self.coordinator_id} on port {self.port}", flush=True)
